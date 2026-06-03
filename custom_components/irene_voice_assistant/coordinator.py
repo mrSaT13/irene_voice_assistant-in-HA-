@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import ssl
 from datetime import timedelta
 from typing import Any
 
@@ -57,6 +58,9 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.name = name
         self.return_format = return_format
         
+        # Определяем WS URL
+        self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        
         # Chat history
         self.chat_history: list[dict[str, Any]] = []
         self.max_history = 100
@@ -71,6 +75,13 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._pending_responses: dict[str, asyncio.Future] = {}
         self._response_counter = 0
         self._ws_listener_task: asyncio.Task | None = None
+        
+        # SSL context for self-signed certs
+        self._ssl_context: ssl.SSLContext | bool = False
+        if self.base_url.startswith("https://"):
+            self._ssl_context = ssl.create_default_context()
+            self._ssl_context.check_hostname = False
+            self._ssl_context.verify_mode = ssl.CERT_NONE
     
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Irene."""
@@ -105,14 +116,15 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return
             
             try:
-                ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
-                ws_url = f"{ws_url}{API_WEBSOCKET}"
+                ws_url = f"{self.ws_base_url}{API_WEBSOCKET}"
                 
                 _LOGGER.info(f"Connecting to WebSocket: {ws_url}")
                 
+                # Подключаемся с учётом SSL
                 self.ws_connection = await self.session.ws_connect(
                     ws_url,
                     timeout=10.0,
+                    ssl=self._ssl_context if self._ssl_context else False,
                 )
                 
                 # Negotiate protocols
@@ -128,7 +140,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.info(f"WebSocket connected. Agreed protocols: {self.agreed_protocols}")
                 
             except Exception as err:
-                _LOGGER.error(f"Failed to connect WebSocket: {err}")
+                _LOGGER.error(f"Failed to connect WebSocket: {err}", exc_info=True)
                 self.ws_connected = False
                 raise
     
@@ -235,7 +247,10 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Create future for response
             response_id = str(self._response_counter)
             self._response_counter += 1
-            future = self.hass.async_create_future()
+            
+            # ✅ ИСПРАВЛЕНО: используем asyncio.Future() вместо hass.async_create_future()
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future = loop.create_future()
             self._pending_responses[response_id] = future
             
             # Send message
@@ -264,7 +279,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._pending_responses.pop(response_id, None)
                 
         except Exception as err:
-            _LOGGER.error(f"Error sending command: {err}")
+            _LOGGER.error(f"Error sending command: {err}", exc_info=True)
             self.ws_connected = False
             raise
     
