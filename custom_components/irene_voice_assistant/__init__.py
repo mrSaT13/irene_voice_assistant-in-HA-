@@ -17,9 +17,6 @@ from .const import (
     DEFAULT_RETURN_FORMAT,
     DEFAULT_PORT,
     DEFAULT_NAME,
-    PANEL_URL,
-    PANEL_ICON,
-    PANEL_TITLE,
 )
 from .coordinator import IreneCoordinator, clean_host
 from .services import async_setup_services, async_unload_services
@@ -74,21 +71,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     async_setup_services(hass)
     
-    # ✅ Регистрируем боковую панель (только один раз)
-    if not hass.data[DOMAIN].get("_panel_registered"):
-        hass.components.frontend.async_register_built_in_panel(
-            component_name="iframe",
-            sidebar_title=PANEL_TITLE,
-            sidebar_icon=PANEL_ICON,
-            frontend_url_path="irene",
-            config={
-                "url": f"{base_url}/",
-            },
-            require_admin=False,
-        )
-        hass.data[DOMAIN]["_panel_registered"] = True
-        hass.data[DOMAIN]["_panel_base_url"] = base_url
-        _LOGGER.info(f"Sidebar panel registered at /irene -> {base_url}/")
+    # ✅ Запускаем WebSocket подключение и слушатель событий
+    hass.async_create_task(coordinator.ensure_websocket_connected())
     
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     
@@ -98,6 +82,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    _LOGGER.info(f"Unloading Irene entry: {entry.entry_id}")
+    
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     
     if unload_ok:
@@ -107,18 +93,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:
             _LOGGER.warning(f"Error disconnecting: {err}")
         
-        # ✅ Удаляем панель если это последняя интеграция
+        # Unload services only if no more coordinators
         coordinators = [v for v in hass.data[DOMAIN].values() if isinstance(v, IreneCoordinator)]
-        if not coordinators and hass.data[DOMAIN].get("_panel_registered"):
-            try:
-                hass.components.frontend.async_remove_panel("irene")
-                hass.data[DOMAIN]["_panel_registered"] = False
-                _LOGGER.info("Sidebar panel removed")
-            except Exception as err:
-                _LOGGER.warning(f"Error removing panel: {err}")
-        
         if not coordinators:
             async_unload_services(hass)
+            # Clear panel flag
+            hass.data[DOMAIN].pop("_panel_registered", None)
     
     return unload_ok
 

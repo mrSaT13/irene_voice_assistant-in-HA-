@@ -12,7 +12,7 @@ from datetime import timedelta
 from typing import Any
 
 import aiohttp
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, Event, EventStateChangedData
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -28,24 +28,26 @@ from .const import (
     MSG_OUT_AUDIO_LINK_PLAYBACK_PROGRESS,
     MSG_OUT_AUDIO_LINK_PLAYBACK_DONE,
     PROTOCOL_IN_TEXT_DIRECT,
+    PROTOCOL_IN_TEXT_INDIRECT,  # ✅ ИМПОРТИРОВАНО
     PROTOCOL_OUT_TEXT_PLAIN,
     PROTOCOL_OUT_AUDIO_LINK,
     PROTOCOL_OUT_TTS_SERVERSIDE,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def clean_host(host: str) -> str:
-    """Убирает протокол и слеши из host."""
+    """Clean host from protocol and slashes."""
     host = host.strip()
-    # Убираем протокол если есть
-    host = re.sub(r'^https?://', '', host)
-    # Убираем trailing slash
-    host = host.rstrip('/')
-    # Убираем port если указан (он будет добавлен отдельно)
-    if ':' in host:
-        host = host.split(':')[0]
+    if host.startswith("https://"):
+        host = host[8:]
+    elif host.startswith("http://"):
+        host = host[7:]
+    host = host.rstrip("/")
+    if ":" in host:
+        host = host.split(":")[0]
     return host
 
 
@@ -65,7 +67,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=f"Irene Voice Assistant ({name})",
-            update_interval=timedelta(seconds=30),
+            update_interval=timedelta(seconds=60),
         )
         
         self.hass = hass
@@ -74,31 +76,24 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.name = name
         self.return_format = return_format
         
-        # Определяем WS URL
         self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         
-        # Chat history
         self.chat_history: list[dict[str, Any]] = []
         self.max_history = 100
         
-        # WebSocket connection
         self.ws_connection: aiohttp.ClientWebSocketResponse | None = None
         self.ws_connected = False
         self.ws_lock = asyncio.Lock()
         self.agreed_protocols: list[str] = []
         
-        # Pending responses
         self._pending_responses: dict[str, asyncio.Future] = {}
         self._response_counter = 0
         self._ws_listener_task: asyncio.Task | None = None
-        self._heartbeat_task: asyncio.Task | None = None
         
-        # Reconnect settings
         self._reconnect_delay = 5
         self._max_reconnect_delay = 60
         self._current_reconnect_delay = self._reconnect_delay
         
-        # SSL context for self-signed certs
         self._ssl_context: ssl.SSLContext | bool = False
         if self.base_url.startswith("https://"):
             self._ssl_context = ssl.create_default_context()
@@ -115,13 +110,11 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ) as response:
                 if response.status == 200:
                     configs = await response.json()
-                    # Проверяем WebSocket
-                    ws_status = "connected" if self.ws_connected else "disconnected"
                     return {
                         "available": True,
                         "last_update": dt_util.utcnow(),
                         "configs_count": len(configs) if isinstance(configs, list) else 0,
-                        "ws_status": ws_status,
+                        "ws_status": "connected" if self.ws_connected else "disconnected",
                         "agreed_protocols": self.agreed_protocols,
                     }
                 else:
@@ -136,28 +129,25 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         raise UpdateFailed("Failed to communicate with Irene")
     
     async def ensure_websocket_connected(self) -> None:
-        """Ensure WebSocket is connected and protocols are negotiated."""
+        """Ensure WebSocket is connected."""
         async with self.ws_lock:
             if self.ws_connected and self.ws_connection and not self.ws_connection.closed:
                 return
             
             try:
                 ws_url = f"{self.ws_base_url}{API_WEBSOCKET}"
-                
                 _LOGGER.info(f"Connecting to WebSocket: {ws_url}")
                 
                 self.ws_connection = await self.session.ws_connect(
                     ws_url,
                     timeout=15.0,
                     ssl=self._ssl_context if self._ssl_context else False,
-                    heartbeat=30.0,  # ✅ Heartbeat для keep-alive
+                    heartbeat=30.0,
                     autoping=True,
                 )
                 
-                # Negotiate protocols
                 await self._negotiate_protocols()
                 
-                # Start listener
                 if self._ws_listener_task is None or self._ws_listener_task.done():
                     self._ws_listener_task = self.hass.async_create_task(
                         self._ws_listener()
@@ -173,8 +163,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise
     
     async def _negotiate_protocols(self) -> None:
-        """Negotiate protocols with the server."""
-        # По документации: каждый элемент - массив альтернатив
+        """Negotiate protocols."""
         negotiate_msg = {
             "type": MSG_NEGOTIATE_REQUEST,
             "protocols": [
@@ -188,7 +177,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.debug(f"Sending negotiate: {negotiate_msg}")
         await self.ws_connection.send_json(negotiate_msg)
         
-        # Wait for agreement
         try:
             msg = await asyncio.wait_for(
                 self.ws_connection.receive_json(),
@@ -200,9 +188,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if msg.get("type") == MSG_NEGOTIATE_AGREE:
                 self.agreed_protocols = msg.get("protocols", [])
                 _LOGGER.info(f"Protocols agreed: {self.agreed_protocols}")
-                
-                if not self.agreed_protocols:
-                    _LOGGER.warning("No protocols agreed! Check server configuration.")
             else:
                 _LOGGER.warning(f"Unexpected negotiate response: {msg}")
                 self.agreed_protocols = []
@@ -228,7 +213,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     elif msg.type == aiohttp.WSMsgType.PING:
                         await self.ws_connection.pong(msg.data)
                     elif msg.type == aiohttp.WSMsgType.PONG:
-                        _LOGGER.debug("Received pong")
+                        pass
                     elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
                         _LOGGER.info(f"WebSocket closing: {msg.data}")
                         break
@@ -237,7 +222,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         break
                         
                 except asyncio.TimeoutError:
-                    # Send ping to keep alive
                     try:
                         if self.ws_connection and not self.ws_connection.closed:
                             await self.ws_connection.ping()
@@ -251,13 +235,12 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             was_connected = self.ws_connected
             self.ws_connected = False
             if was_connected:
-                _LOGGER.info("WebSocket listener stopped, scheduling reconnect")
-                # Schedule reconnect
+                _LOGGER.info("WebSocket disconnected, scheduling reconnect")
                 self.hass.async_create_task(self._reconnect())
     
     async def _reconnect(self) -> None:
-        """Attempt to reconnect WebSocket."""
-        while not self.ws_connected:
+        """Reconnect WebSocket."""
+        while not self.ws_connected and self.hass.is_running:
             _LOGGER.info(f"Reconnecting in {self._current_reconnect_delay}s...")
             await asyncio.sleep(self._current_reconnect_delay)
             
@@ -283,7 +266,17 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info(f"Received text response: {text}")
             self._add_to_history("assistant", text)
             
-            # Resolve ALL pending futures
+            # ✅ Создаем событие HA для уведомлений
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_message",
+                {
+                    "type": "text",
+                    "content": text,
+                    "role": "assistant",
+                }
+            )
+            
+            # Resolve pending futures
             for future in list(self._pending_responses.values()):
                 if not future.done():
                     future.set_result({"type": "text", "text": text})
@@ -294,10 +287,19 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             alt_text = data.get("altText", "")
             _LOGGER.info(f"Audio playback request: {url} (id: {playback_id})")
             
-            # Add to history
             self._add_to_history("assistant", f"[Аудио] {alt_text or url}")
             
-            # Resolve pending futures
+            # ✅ Событие HA для аудио
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_message",
+                {
+                    "type": "audio",
+                    "url": url,
+                    "playback_id": playback_id,
+                    "alt_text": alt_text,
+                }
+            )
+            
             for future in list(self._pending_responses.values()):
                 if not future.done():
                     future.set_result({
@@ -307,7 +309,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "alt_text": alt_text,
                     })
             
-            # Send playback-done (мы не можем реально воспроизвести)
+            # Подтверждаем воспроизведение
             if playback_id:
                 try:
                     await self.ws_connection.send_json({
@@ -317,10 +319,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception as err:
                     _LOGGER.warning(f"Failed to send playback-done: {err}")
         
-        elif msg_type == "negotiate/agree":
-            # Уже обработано в _negotiate_protocols
-            pass
-        
         else:
             _LOGGER.debug(f"Unhandled message type: {msg_type}")
     
@@ -329,10 +327,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             await self.ensure_websocket_connected()
             
-            # Add to history
             self._add_to_history("user", text)
             
-            # Create future for response
             response_id = str(self._response_counter)
             self._response_counter += 1
             
@@ -340,7 +336,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             future: asyncio.Future = loop.create_future()
             self._pending_responses[response_id] = future
             
-            # Send message по документации
             message = {
                 "type": MSG_IN_TEXT_DIRECT_TEXT,
                 "text": text,
@@ -353,12 +348,10 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (aiohttp.ClientConnectionResetError, ConnectionResetError) as err:
                 _LOGGER.warning(f"Connection lost while sending: {err}")
                 self.ws_connected = False
-                # Try to reconnect and resend
                 await asyncio.sleep(1)
                 await self.ensure_websocket_connected()
                 await self.ws_connection.send_json(message)
             
-            # Wait for response with timeout
             try:
                 result = await asyncio.wait_for(future, timeout=30.0)
                 
@@ -404,29 +397,20 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise
     
     async def get_configs(self) -> list[dict[str, Any]]:
-        """Get all configs from Irene."""
-        try:
-            url = f"{self.base_url}{API_CONFIGS}"
-            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    raise UpdateFailed(f"API error: {response.status}")
-        except Exception as err:
-            _LOGGER.error(f"Error getting configs: {err}")
-            raise
+        """Get all configs."""
+        url = f"{self.base_url}{API_CONFIGS}"
+        async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                raise UpdateFailed(f"API error: {response.status}")
     
     async def get_plugins(self) -> list[dict[str, Any]]:
-        """Get list of plugins."""
-        try:
-            url = f"{self.base_url}{API_PLUGINS}"
-            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    return []
-        except Exception as err:
-            _LOGGER.error(f"Error getting plugins: {err}")
+        """Get plugins."""
+        url = f"{self.base_url}/api/discover_plugins/plugins"
+        async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            if response.status == 200:
+                return await response.json()
             return []
     
     async def disconnect_websocket(self) -> None:
@@ -440,16 +424,12 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except asyncio.CancelledError:
                 pass
         
-        if self._heartbeat_task and not self._heartbeat_task.done():
-            self._heartbeat_task.cancel()
-        
         if self.ws_connection and not self.ws_connection.closed:
             try:
                 await self.ws_connection.close()
             except Exception:
                 pass
         
-        # Cancel all pending futures
         for future in self._pending_responses.values():
             if not future.done():
                 future.cancel()

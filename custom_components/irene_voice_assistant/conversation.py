@@ -29,7 +29,7 @@ async def async_setup_entry(
     agent = IreneConversationAgent(hass, coordinator, config_entry)
     conversation.async_set_agent(hass, config_entry, agent)
     
-    _LOGGER.info(f"Irene conversation agent registered for {config_entry.title}")
+    _LOGGER.info(f"Irene conversation agent registered: {config_entry.title}")
 
 
 async def async_unload_entry(
@@ -38,7 +38,7 @@ async def async_unload_entry(
 ) -> None:
     """Unload conversation platform."""
     conversation.async_unset_agent(hass, config_entry)
-    _LOGGER.info(f"Irene conversation agent unloaded for {config_entry.title}")
+    _LOGGER.info(f"Irene conversation agent unloaded: {config_entry.title}")
 
 
 class IreneConversationAgent(conversation.AbstractConversationAgent):
@@ -50,7 +50,7 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
         coordinator: IreneCoordinator,
         config_entry: ConfigEntry,
     ) -> None:
-        """Initialize the agent."""
+        """Initialize."""
         self.hass = hass
         self.coordinator = coordinator
         self.config_entry = config_entry
@@ -71,11 +71,11 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
     ) -> conversation.ConversationResult:
         """Process user input."""
         try:
-            _LOGGER.info(f"Processing: {user_input.text}")
+            _LOGGER.info(f"Irene processing: {user_input.text}")
             
             response_text = await self.coordinator.send_text_command(user_input.text)
             
-            _LOGGER.info(f"Response: {response_text}")
+            _LOGGER.info(f"Irene response: {response_text}")
             
             intent_response = intent.IntentResponse(language=user_input.language)
             intent_response.async_set_speech(response_text)

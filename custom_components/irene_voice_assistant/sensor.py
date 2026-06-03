@@ -26,6 +26,7 @@ async def async_setup_entry(
     async_add_entities([
         IreneStatusSensor(coordinator, config_entry),
         IreneHistorySensor(coordinator, config_entry),
+        IrenePluginsSensor(coordinator, config_entry),
     ])
 
 
@@ -33,7 +34,7 @@ class IreneStatusSensor(CoordinatorEntity, SensorEntity):
     """Sensor for Irene connection status."""
     
     def __init__(self, coordinator: IreneCoordinator, config_entry: ConfigEntry) -> None:
-        """Initialize the sensor."""
+        """Initialize."""
         super().__init__(coordinator)
         self._attr_name = f"{coordinator.name} Status"
         self._attr_unique_id = f"{config_entry.entry_id}_status"
@@ -41,14 +42,12 @@ class IreneStatusSensor(CoordinatorEntity, SensorEntity):
     
     @property
     def native_value(self) -> str | None:
-        """Return the sensor value."""
         if self.coordinator.data and self.coordinator.data.get("available"):
             return "Online"
         return "Offline"
     
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return additional attributes."""
         attrs = {}
         if self.coordinator.data:
             attrs["last_update"] = self.coordinator.data.get("last_update")
@@ -58,10 +57,10 @@ class IreneStatusSensor(CoordinatorEntity, SensorEntity):
 
 
 class IreneHistorySensor(CoordinatorEntity, SensorEntity):
-    """Sensor for Irene chat history count."""
+    """Sensor for chat history count."""
     
     def __init__(self, coordinator: IreneCoordinator, config_entry: ConfigEntry) -> None:
-        """Initialize the sensor."""
+        """Initialize."""
         super().__init__(coordinator)
         self._attr_name = f"{coordinator.name} Messages"
         self._attr_unique_id = f"{config_entry.entry_id}_messages"
@@ -69,5 +68,21 @@ class IreneHistorySensor(CoordinatorEntity, SensorEntity):
     
     @property
     def native_value(self) -> int:
-        """Return the number of messages."""
         return len(self.coordinator.chat_history)
+
+
+class IrenePluginsSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for plugins count."""
+    
+    def __init__(self, coordinator: IreneCoordinator, config_entry: ConfigEntry) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._attr_name = f"{coordinator.name} Plugins"
+        self._attr_unique_id = f"{config_entry.entry_id}_plugins"
+        self._attr_icon = "mdi:puzzle"
+    
+    @property
+    def native_value(self) -> int:
+        if self.coordinator.data:
+            return self.coordinator.data.get("configs_count", 0)
+        return 0
