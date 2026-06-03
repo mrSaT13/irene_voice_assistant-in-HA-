@@ -10,22 +10,18 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_NAME,
-    CONF_PORT,
-    CONF_SSL,
-)
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_SSL
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     API_CONFIGS,
     CONF_RETURN_FORMAT,
+    CONF_REFRESH_INTERVAL,
     DEFAULT_PORT,
     DEFAULT_RETURN_FORMAT,
     DEFAULT_NAME,
+    DEFAULT_REFRESH_INTERVAL,
     DOMAIN,
 )
 
@@ -35,14 +31,11 @@ _LOGGER = logging.getLogger(__name__)
 def clean_host(host: str) -> str:
     """Clean host from protocol and slashes."""
     host = host.strip()
-    # Remove protocol if present
     if host.startswith("https://"):
         host = host[8:]
     elif host.startswith("http://"):
         host = host[7:]
-    # Remove trailing slash
     host = host.rstrip("/")
-    # Remove port if specified
     if ":" in host:
         host = host.split(":")[0]
     return host
@@ -79,9 +72,9 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
+    ):
         """Handle the initial step."""
-        errors: dict[str, str] = {}
+        errors = {}
         
         if user_input is not None:
             try:
@@ -93,7 +86,6 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 
                 if success:
-                    # Clean host before saving
                     user_input[CONF_HOST] = clean_host(user_input[CONF_HOST])
                     
                     return self.async_create_entry(
@@ -101,6 +93,7 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         data=user_input,
                         options={
                             CONF_RETURN_FORMAT: DEFAULT_RETURN_FORMAT,
+                            CONF_REFRESH_INTERVAL: DEFAULT_REFRESH_INTERVAL,
                         },
                     )
                 else:
@@ -139,7 +132,7 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
-    ) -> FlowResult:
+    ):
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
@@ -157,6 +150,15 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
                         "text": "Текст",
                         "audio": "Аудио",
                     }),
+                    vol.Optional(
+                        CONF_REFRESH_INTERVAL,
+                        default=self.config_entry.options.get(
+                            CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
                 }
             ),
+            description_placeholders={
+                "interval_hint": "Интервал обновления статуса Ирины (в секундах)",
+            },
         )

@@ -7,25 +7,26 @@
         "data": {
           "host": "Host",
           "port": "Port",
-          "ssl": "Использовать SSL",
-          "name": "Имя ассистента"
+          "ssl": "Use SSL",
+          "name": "Name"
         }
       }
     },
     "error": {
-      "cannot_connect": "Не удалось подключиться к Irene",
-      "unknown": "Неизвестная ошибка"
+      "cannot_connect": "Failed to connect",
+      "unknown": "Unknown error"
     },
     "abort": {
-      "already_configured": "Устройство уже настроено"
+      "already_configured": "Already configured"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Настройки Irene",
+        "title": "Irene Options",
         "data": {
-          "return_format": "Формат ответа"
+          "return_format": "Return format",
+          "refresh_interval": "Refresh interval (seconds)"
         }
       }
     }

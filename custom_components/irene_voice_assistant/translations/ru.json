@@ -3,9 +3,9 @@
     "step": {
       "user": {
         "title": "Irene Voice Assistant",
-        "description": "Настройка подключения к Irene Voice Assistant",
+        "description": "Настройка подключения к Irene Voice Assistant. Введите IP или домен БЕЗ протокола.",
         "data": {
-          "host": "Хост (IP адрес)",
+          "host": "Хост (IP или домен БЕЗ http://)",
           "port": "Порт",
           "ssl": "Использовать SSL/HTTPS",
           "name": "Имя ассистента"
@@ -13,7 +13,7 @@
       }
     },
     "error": {
-      "cannot_connect": "Не удалось подключиться к Irene. Проверьте адрес и порт.",
+      "cannot_connect": "Не удалось подключиться к Irene. Проверьте адрес, порт и что сервер запущен.",
       "unknown": "Произошла неизвестная ошибка"
     },
     "abort": {
@@ -24,13 +24,15 @@
     "step": {
       "init": {
         "title": "Настройки Irene",
+        "description": "Настройте параметры интеграции",
         "data": {
-          "return_format": "Формат ответа"
-        },
-        "description": "Настройте параметры интеграции"
+          "return_format": "Формат ответа",
+          "refresh_interval": "Интервал обновления (секунды, 30-3600)"
+        }
       }
     }
-  },
+  }
+},
   "services": {
     "send_command": {
       "name": "Отправить команду",

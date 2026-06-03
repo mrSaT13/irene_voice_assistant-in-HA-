@@ -3,14 +3,16 @@
 
 DOMAIN = "irene_voice_assistant"
 
-DEFAULT_PORT = 8186
+DEFAULT_PORT = 8086
 DEFAULT_NAME = "Irene"
 DEFAULT_RETURN_FORMAT = "text"
+DEFAULT_REFRESH_INTERVAL = 60  # секунды
 
 CONF_RETURN_FORMAT = "return_format"
+CONF_REFRESH_INTERVAL = "refresh_interval"
 CONF_WS_HEARTBEAT = "ws_heartbeat"
 
-# WebSocket protocols (по документации)
+# WebSocket protocols
 PROTOCOL_IN_TEXT_DIRECT = "in.text-direct"
 PROTOCOL_IN_TEXT_INDIRECT = "in.text-indirect"
 PROTOCOL_IN_STT_CLIENTSIDE = "in.stt.clientside"
@@ -37,7 +39,7 @@ MSG_IN_STT_SERVERSIDE_PROCESSED = "in.stt.serverside/processed"
 MSG_IN_MUTE_MUTE = "in.mute/mute"
 MSG_IN_MUTE_UNMUTE = "in.mute/unmute"
 
-# API endpoints (из OpenAPI)
+# API endpoints
 API_CONFIGS = "/api/config/configs"
 API_NOTIFY = "/api/notification_api/notify"
 API_PLUGINS = "/api/discover_plugins/plugins"
