@@ -1,0 +1,7 @@
+{
+  "name": "Irene Voice Assistant",
+  "render_readme": true,
+  "country": ["RU"],
+  "homeassistant": "2023.1.0",
+  "hacs": "1.6.0"
+}

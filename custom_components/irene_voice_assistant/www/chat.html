@@ -1,0 +1,497 @@
+<!-- custom_components/irene_voice_assistant/www/chat.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Irene Voice Assistant - Chat</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .chat-container {
+            width: 90%;
+            max-width: 800px;
+            height: 90vh;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+            align-items: flex-start;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .message.user {
+            flex-direction: row-reverse;
+        }
+        
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            margin: 0 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+        }
+        
+        .message.user .message-avatar {
+            background: #667eea;
+        }
+        
+        .message.assistant .message-avatar {
+            background: #764ba2;
+        }
+        
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            background: white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .message.user .message-content {
+            background: #667eea;
+            color: white;
+        }
+        
+        .message-time {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+            text-align: right;
+        }
+        
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .chat-input {
+            flex: 1;
+            padding: 12px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        
+        .chat-input:focus {
+            border-color: #667eea;
+        }
+        
+        .send-button, .voice-button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .send-button:hover, .voice-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .voice-button.listening {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        
+        .typing-indicator {
+            display: none;
+            padding: 12px 16px;
+            background: white;
+            border-radius: 18px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 15px;
+        }
+        
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #999;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: typing 1.4s infinite;
+        }
+        
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        
+        @keyframes typing {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
+        }
+        
+        .settings-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.2);
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            color: white;
+            cursor: pointer;
+            font-size: 20px;
+        }
+        
+        .clear-history {
+            padding: 10px;
+            background: #f5f5f5;
+            text-align: center;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .clear-history button {
+            background: #f5576c;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            Irene Voice Assistant
+            <button class="settings-button" onclick="showSettings()">⚙️</button>
+        </div>
+        
+        <div class="clear-history">
+            <button onclick="clearHistory()">🗑️ Очистить историю</button>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="typing-indicator" id="typingIndicator">
+                <span></span><span></span><span></span>
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <input 
+                type="text" 
+                class="chat-input" 
+                id="chatInput" 
+                placeholder="Введите сообщение..."
+                onkeypress="handleKeyPress(event)"
+            >
+            <button class="voice-button" id="voiceButton" onclick="toggleVoiceInput()">
+                🎤
+            </button>
+            <button class="send-button" onclick="sendMessage()">
+                Отправить
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isListening = false;
+        let mediaRecorder = null;
+        let audioContext = null;
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadChatHistory();
+            connectWebSocket();
+        });
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/wsrawtext`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleResponse(data);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket closed, reconnecting...');
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+        
+        async function loadChatHistory() {
+            try {
+                const response = await fetch('/api/irene_voice_assistant/history');
+                const history = await response.json();
+                history.forEach(msg => {
+                    addMessage(msg.role, msg.content, msg.timestamp);
+                });
+            } catch (error) {
+                console.error('Failed to load history:', error);
+            }
+        }
+        
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            
+            if (!text) return;
+            
+            // Add user message
+            addMessage('user', text);
+            input.value = '';
+            
+            // Show typing indicator
+            showTyping(true);
+            
+            // Send via WebSocket
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    txt: text,
+                    returnFormat: 'saytxt'
+                }));
+            } else {
+                // Fallback to HTTP
+                try {
+                    const response = await fetch(
+                        `/sendTxtCmd?cmd=${encodeURIComponent(text)}&returnFormat=saytxt`
+                    );
+                    const result = await response.text();
+                    showTyping(false);
+                    addMessage('assistant', result);
+                } catch (error) {
+                    console.error('Error:', error);
+                    showTyping(false);
+                }
+            }
+        }
+        
+        function handleResponse(data) {
+            showTyping(false);
+            
+            if (data.wav_base64) {
+                // Play audio
+                const audio = new Audio(`data:audio/wav;base64,${data.wav_base64}`);
+                audio.play();
+                addMessage('assistant', '[Audio response]');
+            } else if (typeof data === 'string') {
+                addMessage('assistant', data);
+            } else {
+                addMessage('assistant', JSON.stringify(data));
+            }
+        }
+        
+        function addMessage(role, content, timestamp = null) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const typingIndicator = document.getElementById('typingIndicator');
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            
+            const time = timestamp ? new Date(timestamp).toLocaleTimeString() : 
+                                   new Date().toLocaleTimeString();
+            
+            messageDiv.innerHTML = `
+                <div class="message-avatar">${role === 'user' ? '👤' : '🤖'}</div>
+                <div class="message-content">
+                    <div>${escapeHtml(content)}</div>
+                    <div class="message-time">${time}</div>
+                </div>
+            `;
+            
+            messagesDiv.insertBefore(messageDiv, typingIndicator);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function showTyping(show) {
+            const indicator = document.getElementById('typingIndicator');
+            indicator.style.display = show ? 'block' : 'none';
+            if (show) {
+                const messagesDiv = document.getElementById('chatMessages');
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+        }
+        
+        async function toggleVoiceInput() {
+            if (isListening) {
+                stopVoiceInput();
+            } else {
+                startVoiceInput();
+            }
+        }
+        
+        async function startVoiceInput() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        sampleRate: 48000,
+                        channelCount: 1
+                    } 
+                });
+                
+                mediaRecorder = new MediaRecorder(stream, {
+                    mimeType: 'audio/webm;codecs=opus'
+                });
+                
+                const audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await sendAudio(audioBlob);
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start(1000); // Send every second
+                isListening = true;
+                
+                document.getElementById('voiceButton').classList.add('listening');
+                
+            } catch (error) {
+                console.error('Voice input error:', error);
+                alert('Не удалось получить доступ к микрофону');
+            }
+        }
+        
+        function stopVoiceInput() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                isListening = false;
+                document.getElementById('voiceButton').classList.remove('listening');
+            }
+        }
+        
+        async function sendAudio(audioBlob) {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/wsmic`;
+            
+            const wsMic = new WebSocket(wsUrl);
+            
+            wsMic.onopen = () => {
+                const reader = audioBlob.stream().getReader();
+                
+                function sendChunk() {
+                    reader.read().then(({ done, value }) => {
+                        if (done) {
+                            wsMic.send(JSON.stringify({ eof: 1 }));
+                            wsMic.close();
+                            return;
+                        }
+                        
+                        wsMic.send(value);
+                        sendChunk();
+                    });
+                }
+                
+                sendChunk();
+            };
+            
+            wsMic.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.text && data.text.trim()) {
+                    document.getElementById('chatInput').value = data.text;
+                    sendMessage();
+                }
+            };
+        }
+        
+        async function clearHistory() {
+            if (confirm('Очистить историю чата?')) {
+                try {
+                    await fetch('/api/irene_voice_assistant/clear_history', { method: 'POST' });
+                    document.getElementById('chatMessages').innerHTML = `
+                        <div class="typing-indicator" id="typingIndicator">
+                            <span></span><span></span><span></span>
+                        </div>
+                    `;
+                } catch (error) {
+                    console.error('Failed to clear history:', error);
+                }
+            }
+        }
+        
+        function showSettings() {
+            // Open Home Assistant config
+            window.location.href = '/config';
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "domain": "irene_voice_assistant",
+  "name": "Irene Voice Assistant",
+  "codeowners": ["@mrSaT13"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/mrSaT13/irene_voice_assistant-in-HA-",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/mrSaT13/irene_voice_assistant-in-HA-/issues",
+  "requirements": [],
+  "version": "1.0.0",
+  "homeassistant": "2023.1.0",
+  "iot_standards": ["voice_assistant"]
+}

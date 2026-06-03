@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Irene Voice Assistant",
+        "description": "Настройка подключения к Irene Voice Assistant",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "ssl": "Использовать SSL",
+          "name": "Имя ассистента"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к Irene",
+      "unknown": "Неизвестная ошибка"
+    },
+    "abort": {
+      "already_configured": "Устройство уже настроено"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Настройки Irene",
+        "data": {
+          "return_format": "Формат ответа"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+# custom_components/irene_voice_assistant/services.yaml
+send_command:
+  name: Send Command
+  description: Send a text command to Irene
+  fields:
+    command:
+      name: Command
+      description: The command to send
+      example: "включи свет на кухне"
+      required: true
+      selector:
+        text:
+
+send_raw_text:
+  name: Send Raw Text
+  description: Send raw text (may include assistant name)
+  fields:
+    text:
+      name: Text
+      description: The raw text to send
+      example: "ирена включи свет"
+      required: true
+      selector:
+        text:
+
+tts_say:
+  name: TTS Say
+  description: Make Irene say text
+  fields:
+    text:
+      name: Text
+      description: Text to say
+      example: "Привет!"
+      required: true
+      selector:
+        text:
+
+get_chat_history:
+  name: Get Chat History
+  description: Get chat history
+  fields:
+    limit:
+      name: Limit
+      description: Number of messages to retrieve
+      example: 50
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+
+clear_chat_history:
+  name: Clear Chat History
+  description: Clear all chat history
+  fields: {}

@@ -1,0 +1,81 @@
+# custom_components/irene_voice_assistant/translations/ru.json
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Irene Voice Assistant",
+        "description": "Настройка подключения к Irene Voice Assistant",
+        "data": {
+          "host": "Хост (IP адрес)",
+          "port": "Порт",
+          "ssl": "Использовать SSL/HTTPS",
+          "name": "Имя ассистента"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться к Irene. Проверьте адрес и порт.",
+      "unknown": "Произошла неизвестная ошибка"
+    },
+    "abort": {
+      "already_configured": "Устройство уже настроено"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Настройки Irene",
+        "data": {
+          "return_format": "Формат ответа"
+        },
+        "description": "Настройте параметры интеграции"
+      }
+    }
+  },
+  "services": {
+    "send_command": {
+      "name": "Отправить команду",
+      "description": "Отправить текстовую команду Irene",
+      "fields": {
+        "command": {
+          "name": "Команда",
+          "description": "Текст команды"
+        }
+      }
+    },
+    "send_raw_text": {
+      "name": "Отправить сырой текст",
+      "description": "Отправить текст (может включать имя ассистента)",
+      "fields": {
+        "text": {
+          "name": "Текст",
+          "description": "Текст для отправки"
+        }
+      }
+    },
+    "tts_say": {
+      "name": "TTS озвучка",
+      "description": "Заставить Irene произнести текст",
+      "fields": {
+        "text": {
+          "name": "Текст",
+          "description": "Текст для озвучки"
+        }
+      }
+    },
+    "get_chat_history": {
+      "name": "Получить историю чата",
+      "description": "Получить историю сообщений",
+      "fields": {
+        "limit": {
+          "name": "Лимит",
+          "description": "Количество сообщений"
+        }
+      }
+    },
+    "clear_chat_history": {
+      "name": "Очистить историю",
+      "description": "Очистить всю историю чата"
+    }
+  }
+}
