@@ -3,8 +3,9 @@
 
 DOMAIN = "irene_voice_assistant"
 
-DEFAULT_PORT = 8086
+DEFAULT_PORT = 8186
 DEFAULT_NAME = "Irene"
+DEFAULT_RETURN_FORMAT = "text"
 
 CONF_RETURN_FORMAT = "return_format"
 CONF_WS_HEARTBEAT = "ws_heartbeat"
