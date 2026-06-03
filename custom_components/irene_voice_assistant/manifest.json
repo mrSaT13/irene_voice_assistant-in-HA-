@@ -3,13 +3,12 @@
   "name": "Irene Voice Assistant",
   "codeowners": ["@mrSaT13"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/mrSaT13/irene_voice_assistant-in-HA-",
   "integration_type": "hub",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/mrSaT13/irene_voice_assistant-in-HA-/issues",
   "requirements": [],
-  "version": "1.0.0",
-  "homeassistant": "2023.1.0",
-  "iot_standards": ["voice_assistant"]
+  "version": "1.1.0",
+  "homeassistant": "2024.1.0"
 }

@@ -6,12 +6,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.notify import (
-    ATTR_TITLE,
-    BaseNotificationService,
-)
+from homeassistant.components.notify import NotifyEntity, NotifyEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import IreneCoordinator
@@ -19,33 +17,35 @@ from .coordinator import IreneCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_get_service(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: Any,
-    discovery_info: Any = None,
-) -> BaseNotificationService | None:
-    """Get the Irene notification service."""
-    if discovery_info is None:
-        return None
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up notify entities."""
+    coordinator: IreneCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     
-    coordinator: IreneCoordinator = hass.data[DOMAIN][discovery_info["entry_id"]]
-    
-    return IreneNotificationService(coordinator)
+    async_add_entities([
+        IreneNotifyEntity(coordinator, config_entry),
+    ])
 
 
-class IreneNotificationService(BaseNotificationService):
-    """Implement notification service for Irene."""
+class IreneNotifyEntity(NotifyEntity):
+    """Implement notification entity for Irene."""
     
-    def __init__(self, coordinator: IreneCoordinator) -> None:
-        """Initialize the service."""
-        self.coordinator = coordinator
+    _attr_supported_features = NotifyEntityFeature.ANNOUNCE
     
-    async def async_send_message(
+    def __init__(
         self,
-        message: str = "",
-        title: str | None = None,
-        **kwargs: Any,
+        coordinator: IreneCoordinator,
+        config_entry: ConfigEntry,
     ) -> None:
+        """Initialize the entity."""
+        self.coordinator = coordinator
+        self._attr_name = coordinator.name
+        self._attr_unique_id = f"{config_entry.entry_id}_notify"
+    
+    async def async_send_message(self, message: str, title: str | None = None) -> None:
         """Send a notification via Irene TTS."""
         text_to_say = f"{title}: {message}" if title else message
         

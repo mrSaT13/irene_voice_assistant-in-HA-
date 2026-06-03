@@ -38,6 +38,7 @@ async def async_unload_entry(
 ) -> None:
     """Unload conversation platform."""
     conversation.async_unset_agent(hass, config_entry)
+    _LOGGER.info(f"Irene conversation agent unloaded for {config_entry.title}")
 
 
 class IreneConversationAgent(conversation.AbstractConversationAgent):
@@ -72,12 +73,10 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
         try:
             _LOGGER.info(f"Processing: {user_input.text}")
             
-            # Send to Irene via WebSocket
             response_text = await self.coordinator.send_text_command(user_input.text)
             
             _LOGGER.info(f"Response: {response_text}")
             
-            # Create response
             intent_response = intent.IntentResponse(language=user_input.language)
             intent_response.async_set_speech(response_text)
             

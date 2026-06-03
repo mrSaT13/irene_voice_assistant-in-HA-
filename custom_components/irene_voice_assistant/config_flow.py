@@ -2,12 +2,11 @@
 """Config flow for Irene Voice Assistant."""
 
 from __future__ import annotations
-
+import aiohttp
 import logging
 from typing import Any
 
 import voluptuous as vol
-from aiohttp import ClientError
 from homeassistant import config_entries
 from homeassistant.const import (
     CONF_HOST,
@@ -27,19 +26,24 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
 )
+from .coordinator import clean_host
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def _test_connection(hass: HomeAssistant, host: str, port: int, use_ssl: bool) -> bool:
     """Test connection to Irene."""
+    # ✅ Очищаем host от протокола
+    clean = clean_host(host)
     protocol = "https" if use_ssl else "http"
-    url = f"{protocol}://{host}:{port}{API_CONFIGS}"
+    url = f"{protocol}://{clean}:{port}{API_CONFIGS}"
+    
+    _LOGGER.info(f"Testing connection to: {url}")
     
     session = async_get_clientsession(hass, verify_ssl=False)
     
     try:
-        async with session.get(url, timeout=10) as response:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
             if response.status == 200:
                 _LOGGER.info(f"Successfully connected to Irene at {url}")
                 return True
@@ -64,7 +68,6 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         
         if user_input is not None:
-            # Validate connection
             try:
                 success = await _test_connection(
                     self.hass,
@@ -74,6 +77,9 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 
                 if success:
+                    # ✅ Сохраняем очищенный host
+                    user_input[CONF_HOST] = clean_host(user_input[CONF_HOST])
+                    
                     return self.async_create_entry(
                         title=user_input[CONF_NAME],
                         data=user_input,
@@ -98,6 +104,9 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 }
             ),
+            description_placeholders={
+                "help": "Введите IP или домен БЕЗ протокола (например: 192.168.1.100 или irene.local)",
+            },
             errors=errors,
         )
     

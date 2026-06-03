@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -24,12 +23,10 @@ async def async_setup_entry(
     """Set up Irene sensors."""
     coordinator: IreneCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     
-    entities = [
+    async_add_entities([
         IreneStatusSensor(coordinator, config_entry),
         IreneHistorySensor(coordinator, config_entry),
-    ]
-    
-    async_add_entities(entities)
+    ])
 
 
 class IreneStatusSensor(CoordinatorEntity, SensorEntity):
@@ -55,6 +52,8 @@ class IreneStatusSensor(CoordinatorEntity, SensorEntity):
         attrs = {}
         if self.coordinator.data:
             attrs["last_update"] = self.coordinator.data.get("last_update")
+            attrs["ws_status"] = self.coordinator.data.get("ws_status", "unknown")
+            attrs["agreed_protocols"] = self.coordinator.data.get("agreed_protocols", [])
         return attrs
 
 
