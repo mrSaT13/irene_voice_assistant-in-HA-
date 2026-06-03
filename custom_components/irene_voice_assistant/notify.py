@@ -8,12 +8,10 @@ from typing import Any
 
 from homeassistant.components.notify import (
     ATTR_TITLE,
-    ATTR_TARGET,
     BaseNotificationService,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .const import DOMAIN
 from .coordinator import IreneCoordinator
@@ -23,10 +21,9 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_get_service(
     hass: HomeAssistant,
-    config: ConfigType,
-    name: str,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> BaseNotificationService:
+    config: Any,
+    discovery_info: Any = None,
+) -> BaseNotificationService | None:
     """Get the Irene notification service."""
     if discovery_info is None:
         return None
@@ -47,10 +44,13 @@ class IreneNotificationService(BaseNotificationService):
         self,
         message: str = "",
         title: str | None = None,
-        target: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         """Send a notification via Irene TTS."""
-        text_to_say = title + ": " + message if title else message
+        text_to_say = f"{title}: {message}" if title else message
         
-        await self.coordinator.tts_say(text_to_say)
+        try:
+            await self.coordinator.tts_say(text_to_say)
+            _LOGGER.info(f"TTS message sent: {text_to_say}")
+        except Exception as err:
+            _LOGGER.error(f"Error sending TTS notification: {err}")

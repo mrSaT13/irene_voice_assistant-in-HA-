@@ -53,7 +53,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Irene."""
         try:
-            # Check if Irene is alive
             async with self.session.get(
                 f"{self.base_url}/",
                 timeout=aiohttp.ClientTimeout(total=5),
@@ -82,11 +81,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     result = await response.text()
-                    
-                    # Add to history
                     self._add_to_history("user", text)
                     self._add_to_history("assistant", result)
-                    
                     return result
                 else:
                     raise UpdateFailed(f"API error: {response.status}")
@@ -96,7 +92,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise
     
     async def send_raw_text(self, text: str) -> dict[str, Any]:
-        """Send raw text (may include assistant name)."""
+        """Send raw text."""
         try:
             url = f"{self.base_url}/sendRawTxt"
             params = {
@@ -106,17 +102,14 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
-                    # Try to parse as JSON first
                     content_type = response.headers.get("Content-Type", "")
                     if "application/json" in content_type:
                         result = await response.json()
                     else:
                         result = await response.text()
                     
-                    # Add to history
                     self._add_to_history("user", text)
                     self._add_to_history("assistant", str(result))
-                    
                     return result
                 else:
                     raise UpdateFailed(f"API error: {response.status}")
@@ -132,7 +125,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             params = {"text": text}
             
             async with self.session.get(url, params=params):
-                pass  # Ignore response
+                pass
                 
         except Exception as err:
             _LOGGER.error(f"Error in TTS say: {err}")
@@ -155,7 +148,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise
     
     async def connect_websocket(self) -> None:
-        """Establish WebSocket connection for real-time communication."""
+        """Establish WebSocket connection."""
         if self.ws_connected:
             return
         
@@ -174,7 +167,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.ws_connection and not self.ws_connection.closed:
             await self.ws_connection.close()
             self.ws_connected = False
-            _LOGGER.info("WebSocket disconnected")
     
     async def send_websocket_command(self, text: str) -> None:
         """Send command via WebSocket."""
@@ -182,7 +174,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.connect_websocket()
         
         try:
-            import json
             message = {
                 "txt": text,
                 "returnFormat": self.return_format,
@@ -200,7 +191,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "timestamp": dt_util.utcnow().isoformat(),
         })
         
-        # Trim history if needed
         if len(self.chat_history) > self.max_history:
             self.chat_history = self.chat_history[-self.max_history:]
     
