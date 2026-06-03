@@ -1,55 +1,87 @@
-# custom_components/irene_voice_assistant/services.yaml
 send_command:
-  name: Send Command
-  description: Send a text command to Irene
+  name: Отправить команду
+  description: Отправить текстовую команду Ирине через WebSocket
   fields:
-    command:
-      name: Command
-      description: The command to send
-      example: "включи свет на кухне"
-      required: true
+    entry_id:
+      name: Entry ID
+      description: ID интеграции (опционально)
+      required: false
       selector:
         text:
-
-send_raw_text:
-  name: Send Raw Text
-  description: Send raw text (may include assistant name)
-  fields:
-    text:
-      name: Text
-      description: The raw text to send
-      example: "ирена включи свет"
+    command:
+      name: Команда
+      description: Текст команды
       required: true
+      example: "включи свет на кухне"
       selector:
         text:
 
 tts_say:
-  name: TTS Say
-  description: Make Irene say text
+  name: TTS озвучка
+  description: Отправить текст для озвучки через Irene
   fields:
+    entry_id:
+      name: Entry ID
+      description: ID интеграции (опционально)
+      required: false
+      selector:
+        text:
     text:
-      name: Text
-      description: Text to say
-      example: "Привет!"
+      name: Текст
+      description: Текст для озвучки
       required: true
+      example: "Привет!"
       selector:
         text:
 
 get_chat_history:
-  name: Get Chat History
-  description: Get chat history
+  name: Получить историю чата
+  description: Получить историю сообщений
   fields:
+    entry_id:
+      name: Entry ID
+      description: ID интеграции (опционально)
+      required: false
+      selector:
+        text:
     limit:
-      name: Limit
-      description: Number of messages to retrieve
-      example: 50
+      name: Лимит
+      description: Количество сообщений
       default: 50
       selector:
         number:
           min: 1
-          max: 100
+          max: 500
 
 clear_chat_history:
-  name: Clear Chat History
-  description: Clear all chat history
-  fields: {}
+  name: Очистить историю
+  description: Очистить всю историю чата
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID интеграции (опционально)
+      required: false
+      selector:
+        text:
+
+get_configs:
+  name: Получить конфиги
+  description: Получить все конфиги Ирины
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID интеграции (опционально)
+      required: false
+      selector:
+        text:
+
+get_plugins:
+  name: Получить плагины
+  description: Получить список плагинов Ирины
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID интеграции (опционально)
+      required: false
+      selector:
+        text:
