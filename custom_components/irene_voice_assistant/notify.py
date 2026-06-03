@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.notify import NotifyEntity, NotifyEntityFeature
+from homeassistant.components.notify import NotifyEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -33,8 +33,6 @@ async def async_setup_entry(
 class IreneNotifyEntity(NotifyEntity):
     """Implement notification entity for Irene."""
     
-    _attr_supported_features = NotifyEntityFeature.ANNOUNCE
-    
     def __init__(
         self,
         coordinator: IreneCoordinator,
@@ -44,8 +42,9 @@ class IreneNotifyEntity(NotifyEntity):
         self.coordinator = coordinator
         self._attr_name = coordinator.name
         self._attr_unique_id = f"{config_entry.entry_id}_notify"
+        # ✅ Убрали _attr_supported_features — он не обязателен для TTS
     
-    async def async_send_message(self, message: str, title: str | None = None) -> None:
+    async def async_send_message(self, message: str, title: str | None = None, **kwargs: Any) -> None:
         """Send a notification via Irene TTS."""
         text_to_say = f"{title}: {message}" if title else message
         
