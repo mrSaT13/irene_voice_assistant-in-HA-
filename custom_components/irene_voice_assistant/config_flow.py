@@ -2,11 +2,13 @@
 """Config flow for Irene Voice Assistant."""
 
 from __future__ import annotations
-import aiohttp
+
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
+
 from homeassistant import config_entries
 from homeassistant.const import (
     CONF_HOST,
@@ -26,14 +28,28 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
 )
-from .coordinator import clean_host
 
 _LOGGER = logging.getLogger(__name__)
 
 
+def clean_host(host: str) -> str:
+    """Clean host from protocol and slashes."""
+    host = host.strip()
+    # Remove protocol if present
+    if host.startswith("https://"):
+        host = host[8:]
+    elif host.startswith("http://"):
+        host = host[7:]
+    # Remove trailing slash
+    host = host.rstrip("/")
+    # Remove port if specified
+    if ":" in host:
+        host = host.split(":")[0]
+    return host
+
+
 async def _test_connection(hass: HomeAssistant, host: str, port: int, use_ssl: bool) -> bool:
     """Test connection to Irene."""
-    # ✅ Очищаем host от протокола
     clean = clean_host(host)
     protocol = "https" if use_ssl else "http"
     url = f"{protocol}://{clean}:{port}{API_CONFIGS}"
@@ -77,7 +93,7 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 
                 if success:
-                    # ✅ Сохраняем очищенный host
+                    # Clean host before saving
                     user_input[CONF_HOST] = clean_host(user_input[CONF_HOST])
                     
                     return self.async_create_entry(
@@ -104,9 +120,6 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
                 }
             ),
-            description_placeholders={
-                "help": "Введите IP или домен БЕЗ протокола (например: 192.168.1.100 или irene.local)",
-            },
             errors=errors,
         )
     
