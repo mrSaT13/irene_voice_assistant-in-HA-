@@ -2,31 +2,32 @@
   "config": {
     "step": {
       "user": {
-        "title": "Irene Voice Assistant",
-        "description": "Настройка подключения к Irene Voice Assistant",
+        "title": "Голосовой ассистент Ирина",
+        "description": "Настройка подключения к серверу Ирины",
         "data": {
-          "host": "Host",
-          "port": "Port",
-          "ssl": "Use SSL",
-          "name": "Name"
+          "host": "Адрес сервера (IP или домен)",
+          "port": "Порт",
+          "ssl": "Использовать HTTPS",
+          "name": "Имя ассистента"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect",
-      "unknown": "Unknown error"
+      "cannot_connect": "Не удалось подключиться. Проверьте адрес и порт.",
+      "unknown": "Неизвестная ошибка"
     },
     "abort": {
-      "already_configured": "Already configured"
+      "already_configured": "Уже настроено"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Irene Options",
+        "title": "Настройки Ирины",
+        "description": "Дополнительные параметры интеграции",
         "data": {
-          "return_format": "Return format",
-          "refresh_interval": "Refresh interval (seconds)"
+          "return_format": "Формат ответа",
+          "refresh_interval": "Интервал обновления (секунды)"
         }
       }
     }
