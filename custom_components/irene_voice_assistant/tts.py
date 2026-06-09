@@ -73,11 +73,7 @@ class IreneTTSEntity(TextToSpeechEntity):
         language: str, 
         options: dict[str, Any]
     ) -> tuple[str | None, bytes | None]:
-        """Load TTS from Irene.
-        
-        Returns:
-            Tuple of (file_extension, audio_bytes)
-        """
+        """Load TTS from Irene."""
         try:
             _LOGGER.info(f"TTS request: '{message}' (lang: {language})")
             
