@@ -2,10 +2,10 @@
   "config": {
     "step": {
       "user": {
-        "title": "Irene Voice Assistant",
-        "description": "Настройка подключения к Irene Voice Assistant. Введите IP или домен БЕЗ протокола.",
+        "title": "Голосовой ассистент Ирина",
+        "description": "Настройка подключения к серверу Ирины. Введите IP или домен БЕЗ протокола.",
         "data": {
-          "host": "Хост (IP или домен БЕЗ http://)",
+          "host": "Адрес сервера (IP или домен БЕЗ http://)",
           "port": "Порт",
           "ssl": "Использовать SSL/HTTPS",
           "name": "Имя ассистента"
@@ -23,11 +23,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "Настройки Irene",
-        "description": "Настройте параметры интеграции",
+        "title": "Настройки Ирины",
+        "description": "Настройте параметры интеграции и озвучки",
         "data": {
           "return_format": "Формат ответа",
-          "refresh_interval": "Интервал обновления (секунды, 30-3600)"
+          "refresh_interval": "Интервал обновления (секунды, 30-3600)",
+          "tts_mode": "Режим озвучки",
+          "media_player_entity": "Колонка для озвучки"
+        },
+        "data_description": {
+          "tts_mode": "Где воспроизводить текст: на сервере Ирины, на колонке HA или на обоих",
+          "media_player_entity": "Выберите колонку (Яндекс Станция, Google Home и т.д.) для воспроизведения голоса Ирины"
         }
       }
     }
@@ -35,8 +41,12 @@
   "services": {
     "send_command": {
       "name": "Отправить команду",
-      "description": "Отправить текстовую команду Irene",
+      "description": "Отправить текстовую команду Ирине через WebSocket",
       "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        },
         "command": {
           "name": "Команда",
           "description": "Текст команды"
@@ -47,6 +57,10 @@
       "name": "Отправить сырой текст",
       "description": "Отправить текст (может включать имя ассистента)",
       "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        },
         "text": {
           "name": "Текст",
           "description": "Текст для отправки"
@@ -54,12 +68,52 @@
       }
     },
     "tts_say": {
-      "name": "TTS озвучка",
-      "description": "Заставить Irene произнести текст",
+      "name": "TTS озвучка (сервер Ирины)",
+      "description": "Отправить текст для озвучки через сервер Ирины",
       "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        },
         "text": {
           "name": "Текст",
           "description": "Текст для озвучки"
+        }
+      }
+    },
+    "say": {
+      "name": "Произнести",
+      "description": "Произнести текст через Ирину с выбором режима озвучки",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        },
+        "message": {
+          "name": "Сообщение",
+          "description": "Текст для озвучки"
+        },
+        "mode": {
+          "name": "Режим озвучки",
+          "description": "Где воспроизводить текст"
+        },
+        "media_player": {
+          "name": "Колонка",
+          "description": "Медиаплеер для озвучки (переопределяет настройку интеграции)"
+        }
+      }
+    },
+    "control_device": {
+      "name": "Управлять устройством",
+      "description": "Отправить команду управления устройством через Ирину",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        },
+        "command": {
+          "name": "Команда",
+          "description": "Команда управления (например, 'включи свет на кухне')"
         }
       }
     },
@@ -67,6 +121,10 @@
       "name": "Получить историю чата",
       "description": "Получить историю сообщений",
       "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        },
         "limit": {
           "name": "Лимит",
           "description": "Количество сообщений"
@@ -75,7 +133,13 @@
     },
     "clear_chat_history": {
       "name": "Очистить историю",
-      "description": "Очистить всю историю чата"
+      "description": "Очистить всю историю чата",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "ID интеграции (опционально)"
+        }
+      }
     }
   }
 }

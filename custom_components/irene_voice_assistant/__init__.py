@@ -14,9 +14,14 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     DOMAIN,
     CONF_RETURN_FORMAT,
+    CONF_REFRESH_INTERVAL,
+    CONF_MEDIA_PLAYER,
+    CONF_TTS_MODE,
     DEFAULT_RETURN_FORMAT,
+    DEFAULT_REFRESH_INTERVAL,
     DEFAULT_PORT,
     DEFAULT_NAME,
+    TTS_MODE_BOTH,
 )
 from .coordinator import IreneCoordinator, clean_host
 from .services import async_setup_services, async_unload_services
@@ -27,6 +32,7 @@ PLATFORMS: list[Platform] = [
     Platform.CONVERSATION,
     Platform.NOTIFY,
     Platform.SENSOR,
+    Platform.TTS,
 ]
 
 
@@ -51,12 +57,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     session = async_get_clientsession(hass, verify_ssl=False)
     
+    # ✅ Передаём новые параметры в coordinator
     coordinator = IreneCoordinator(
         hass=hass,
         session=session,
         base_url=base_url,
         name=name,
         return_format=entry.options.get(CONF_RETURN_FORMAT, DEFAULT_RETURN_FORMAT),
+        media_player_entity=entry.options.get(CONF_MEDIA_PLAYER),
+        tts_mode=entry.options.get(CONF_TTS_MODE, TTS_MODE_BOTH),
     )
     
     try:
@@ -71,7 +80,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     async_setup_services(hass)
     
-    # ✅ Запускаем WebSocket подключение и слушатель событий
+    # Запускаем WebSocket подключение
     hass.async_create_task(coordinator.ensure_websocket_connected())
     
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -93,11 +102,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:
             _LOGGER.warning(f"Error disconnecting: {err}")
         
-        # Unload services only if no more coordinators
         coordinators = [v for v in hass.data[DOMAIN].values() if isinstance(v, IreneCoordinator)]
         if not coordinators:
             async_unload_services(hass)
-            # Clear panel flag
             hass.data[DOMAIN].pop("_panel_registered", None)
     
     return unload_ok

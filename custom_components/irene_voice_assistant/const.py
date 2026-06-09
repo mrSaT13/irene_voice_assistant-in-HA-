@@ -1,16 +1,41 @@
 # custom_components/irene_voice_assistant/const.py
 """Constants for Irene Voice Assistant integration."""
 
+from homeassistant.const import Platform
+
 DOMAIN = "irene_voice_assistant"
 
 DEFAULT_PORT = 8086
 DEFAULT_NAME = "Irene"
 DEFAULT_RETURN_FORMAT = "text"
-DEFAULT_REFRESH_INTERVAL = 60  # секунды
+DEFAULT_REFRESH_INTERVAL = 60
 
 CONF_RETURN_FORMAT = "return_format"
 CONF_REFRESH_INTERVAL = "refresh_interval"
 CONF_WS_HEARTBEAT = "ws_heartbeat"
+
+# ✅ НОВЫЕ константы для TTS на колонку
+CONF_MEDIA_PLAYER = "media_player_entity"
+CONF_TTS_MODE = "tts_mode"
+
+# Режимы озвучки
+TTS_MODE_IRENE = "irene"  # Только через Ирину (её серверный TTS)
+TTS_MODE_MEDIA_PLAYER = "media_player"  # Только через колонку (голос Ирины!)
+TTS_MODE_BOTH = "both"  # И там и там
+
+TTS_MODES = {
+    TTS_MODE_IRENE: "🎤 Только сервер Ирины",
+    TTS_MODE_MEDIA_PLAYER: "🔊 Только колонка (голос Ирины!)",
+    TTS_MODE_BOTH: "🎤🔊 Обе (сервер + колонка)",
+}
+
+# Платформы
+PLATFORMS = [
+    Platform.CONVERSATION,
+    Platform.NOTIFY,
+    Platform.SENSOR,
+    Platform.TTS,
+]
 
 # WebSocket protocols
 PROTOCOL_IN_TEXT_DIRECT = "in.text-direct"
@@ -45,12 +70,6 @@ API_NOTIFY = "/api/notification_api/notify"
 API_PLUGINS = "/api/discover_plugins/plugins"
 API_WEBSOCKET = "/api/face_web/ws"
 API_AUDIO_FILE = "/api/web-audio-link-output/files/{file_name}"
-
-PLATFORMS = [
-    "conversation",
-    "notify",
-    "sensor",
-]
 
 # Panel
 PANEL_URL = "/irene_voice_assistant/panel"

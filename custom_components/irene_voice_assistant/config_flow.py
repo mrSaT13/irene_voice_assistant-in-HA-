@@ -12,16 +12,23 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_SSL
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     API_CONFIGS,
     CONF_RETURN_FORMAT,
     CONF_REFRESH_INTERVAL,
+    CONF_MEDIA_PLAYER,
+    CONF_TTS_MODE,
+    TTS_MODE_IRENE,
+    TTS_MODE_MEDIA_PLAYER,
+    TTS_MODE_BOTH,
+    TTS_MODES,
     DEFAULT_PORT,
     DEFAULT_RETURN_FORMAT,
-    DEFAULT_NAME,
     DEFAULT_REFRESH_INTERVAL,
+    DEFAULT_NAME,
     DOMAIN,
 )
 
@@ -72,9 +79,9 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
-    ):
+    ) -> FlowResult:
         """Handle the initial step."""
-        errors = {}
+        errors: dict[str, str] = {}
         
         if user_input is not None:
             try:
@@ -94,6 +101,8 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         options={
                             CONF_RETURN_FORMAT: DEFAULT_RETURN_FORMAT,
                             CONF_REFRESH_INTERVAL: DEFAULT_REFRESH_INTERVAL,
+                            CONF_TTS_MODE: TTS_MODE_BOTH,
+                            CONF_MEDIA_PLAYER: "",
                         },
                     )
                 else:
@@ -132,10 +141,21 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
-    ):
+    ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
+        
+        # ✅ Получаем список media_player из HA
+        media_players = [""]  # Пустая строка = не выбрано
+        for state in self.hass.states.async_all():
+            if state.domain == "media_player":
+                friendly_name = state.attributes.get("friendly_name", state.entity_id)
+                media_players.append(state.entity_id)
+        
+        # Текущие значения
+        current_media_player = self.config_entry.options.get(CONF_MEDIA_PLAYER, "")
+        current_tts_mode = self.config_entry.options.get(CONF_TTS_MODE, TTS_MODE_BOTH)
         
         return self.async_show_form(
             step_id="init",
@@ -156,9 +176,22 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
                             CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+                    
+                    # ✅ Режим озвучки
+                    vol.Optional(
+                        CONF_TTS_MODE,
+                        default=current_tts_mode,
+                    ): vol.In(TTS_MODES),
+                    
+                    # ✅ Колонка для озвучки
+                    vol.Optional(
+                        CONF_MEDIA_PLAYER,
+                        default=current_media_player,
+                    ): vol.In(media_players),
                 }
             ),
             description_placeholders={
-                "interval_hint": "Интервал обновления статуса Ирины (в секундах)",
+                "tts_mode_hint": "Режим озвучки: где воспроизводить текст",
+                "media_player_hint": "Колонка для озвучки (Яндекс Станция, Google Home и т.д.)",
             },
         )
