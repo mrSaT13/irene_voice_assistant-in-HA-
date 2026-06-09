@@ -1,6 +1,5 @@
 # custom_components/irene_voice_assistant/coordinator.py
 """Data coordinator for Irene Voice Assistant with message buffering, HA bridge and TTS to media_player."""
-
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +11,7 @@ from datetime import timedelta
 from typing import Any, Optional
 
 import aiohttp
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -45,6 +45,7 @@ MESSAGE_BUFFER_TIMEOUT = 2.5
 
 
 def clean_host(host: str) -> str:
+    """Clean host from protocol and slashes."""
     host = host.strip()
     if host.startswith("https://"):
         host = host[8:]
@@ -98,6 +99,9 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.tts_mode = tts_mode
         self._pending_audio_responses: dict[str, asyncio.Future] = {}
         
+        # ✅ НОВОЕ: Флаг для TTS запросов (чтобы игнорировать текст в буфере)
+        self._tts_request = False
+        
         self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         
         self.chat_history: list[dict[str, Any]] = []
@@ -131,7 +135,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             f"IreneCoordinator initialized: mode={tts_mode}, "
             f"media_player={media_player_entity}, url={base_url}"
         )
-    
+
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             url = f"{self.base_url}{API_CONFIGS}"
@@ -151,7 +155,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (asyncio.TimeoutError, aiohttp.ClientError) as err:
             _LOGGER.warning(f"Update error: {err}")
         raise UpdateFailed("Failed to communicate with Irene")
-    
+
     async def ensure_websocket_connected(self) -> None:
         async with self.ws_lock:
             if self.ws_connected and self.ws_connection and not self.ws_connection.closed:
@@ -182,7 +186,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.error(f"WS connect failed: {err}", exc_info=True)
                 self.ws_connected = False
                 raise
-    
+
     async def _negotiate_protocols(self) -> None:
         negotiate_msg = {
             "type": MSG_NEGOTIATE_REQUEST,
@@ -204,7 +208,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.agreed_protocols = []
         except asyncio.TimeoutError:
             self.agreed_protocols = []
-    
+
     async def _ws_listener(self) -> None:
         try:
             while self.ws_connected and self.ws_connection and not self.ws_connection.closed:
@@ -240,7 +244,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if was_connected:
                 _LOGGER.info("WS disconnected, scheduling reconnect")
                 self.hass.async_create_task(self._reconnect())
-    
+
     async def _reconnect(self) -> None:
         while not self.ws_connected and self.hass.is_running:
             await asyncio.sleep(self._current_reconnect_delay)
@@ -251,7 +255,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._current_reconnect_delay = min(
                     self._current_reconnect_delay * 2, self._max_reconnect_delay
                 )
-    
+
     def _flush_response_buffer(self) -> None:
         """Сбрасывает буфер и резолвит future со всеми накопленными сообщениями."""
         if self._response_buffer.future and not self._response_buffer.future.done():
@@ -281,7 +285,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._response_buffer.messages.clear()
         self._response_buffer.timer = None
         self._pending_request = False
-    
+
     def _start_buffer_timer(self) -> None:
         """Запускает таймер ожидания дополнительных сообщений."""
         if self._response_buffer.timer:
@@ -292,17 +296,22 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.buffer_timeout,
             lambda: self.hass.async_create_task(self._async_flush_buffer())
         )
-    
+
     async def _async_flush_buffer(self) -> None:
         """Асинхронный сброс буфера."""
         self._flush_response_buffer()
-    
+
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
         msg_type = data.get("type", "")
         
         if msg_type == MSG_OUT_TEXT_PLAIN_TEXT:
             text = data.get("text", "")
             _LOGGER.info(f"Received text: {text}")
+            
+            # ✅ Игнорируем текст для TTS запросов (чтобы не дублировать в буфере)
+            if self._tts_request:
+                _LOGGER.debug("Ignoring text for TTS request")
+                return
             
             # Добавляем в буфер
             self._response_buffer.messages.append({
@@ -386,7 +395,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     title=f"🔊 {self.name}",
                     notification_id=f"irene_audio_{int(dt_util.utcnow().timestamp())}",
                 )
-    
+
     async def send_text_command(self, text: str) -> str:
         """Send command and wait for ALL responses (with buffering)."""
         try:
@@ -438,7 +447,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error(f"Error sending command: {err}", exc_info=True)
             self.ws_connected = False
             return f"Ошибка связи с Ириной: {err}"
-    
+
     async def tts_say(self, text: str) -> None:
         """Озвучить текст через сервер Ирины (через /api/notification_api/notify)."""
         try:
@@ -453,11 +462,11 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             _LOGGER.error(f"TTS error: {err}")
             raise
-    
+
     # ✅ НОВЫЙ МЕТОД: Озвучка на колонке через TTS Ирины
     async def tts_to_media_player(
-        self, 
-        message: str, 
+        self,
+        message: str,
         media_player_entity: str | None = None,
         timeout: float = 15.0,
     ) -> bool:
@@ -511,7 +520,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 pass
             return False
-    
+
     # ✅ НОВЫЙ МЕТОД: Получение URL WAV файла от Ирины
     async def _get_tts_audio_url(self, message: str, timeout: float = 15.0) -> Optional[str]:
         """Отправить текст через WebSocket и получить URL WAV файла.
@@ -522,6 +531,9 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         try:
             await self.ensure_websocket_connected()
+            
+            # ✅ Устанавливаем флаг TTS запроса
+            self._tts_request = True
             
             # Создаём future для ожидания ответа
             loop = asyncio.get_event_loop()
@@ -537,11 +549,13 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "type": MSG_IN_TEXT_DIRECT_TEXT,
                     "text": message,
                 }
+                _LOGGER.info(f"Sending TTS request: {message}")
                 await self.ws_connection.send_json(message_data)
                 
                 # Ждём ответ с URL аудио
                 try:
                     result = await asyncio.wait_for(future, timeout=timeout)
+                    _LOGGER.info(f"Got TTS audio URL: {result}")
                     return result
                 except asyncio.TimeoutError:
                     _LOGGER.warning("Timeout waiting for TTS audio URL")
@@ -549,15 +563,18 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     
             finally:
                 self._pending_audio_responses.pop(audio_response_id, None)
+                # ✅ Сбрасываем флаг
+                self._tts_request = False
                 
         except Exception as err:
             _LOGGER.error(f"Error getting TTS audio URL: {err}", exc_info=True)
+            self._tts_request = False
             return None
-    
+
     # ✅ НОВЫЙ МЕТОД: Универсальная озвучка с учётом режима
     async def tts_say_with_mode(
-        self, 
-        message: str, 
+        self,
+        message: str,
         mode: str | None = None,
         media_player: str | None = None,
     ) -> None:
@@ -594,21 +611,21 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         await self.tts_say(message)
                     except Exception:
                         pass
-    
+
     async def get_configs(self) -> list[dict[str, Any]]:
         url = f"{self.base_url}{API_CONFIGS}"
         async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
             if response.status == 200:
                 return await response.json()
             raise UpdateFailed(f"API error: {response.status}")
-    
+
     async def get_plugins(self) -> list[dict[str, Any]]:
         url = f"{self.base_url}/api/discover_plugins/plugins"
         async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
             if response.status == 200:
                 return await response.json()
             return []
-    
+
     async def disconnect_websocket(self) -> None:
         self.ws_connected = False
         if self._response_buffer.timer:
@@ -633,7 +650,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not future.done():
                 future.cancel()
         self._pending_audio_responses.clear()
-    
+
     def _add_to_history(self, role: str, content: str) -> None:
         self.chat_history.append({
             "role": role,
@@ -642,9 +659,9 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         })
         if len(self.chat_history) > self.max_history:
             self.chat_history = self.chat_history[-self.max_history:]
-    
+
     def get_chat_history(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.chat_history[-limit:]
-    
+
     def clear_history(self) -> None:
         self.chat_history = []
