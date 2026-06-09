@@ -1,143 +1,130 @@
-# custom_components/irene_voice_assistant/services.py
-"""Services for Irene Voice Assistant."""
+# custom_components/irene_voice_assistant/services.yaml
 
-from __future__ import annotations
+send_command:
+  name: Отправить команду Ирине
+  description: Отправить текстовую команду Ирине для обработки
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID записи интеграции (опционально, если одна интеграция)
+      required: false
+      example: "abc123"
+      selector:
+        text:
+    command:
+      name: Команда
+      description: Текст команды для Ирины
+      required: true
+      example: "Включи свет в гостиной"
+      selector:
+        text:
 
-import logging
+tts_say:
+  name: Озвучить через Ирину
+  description: Озвучить текст через сервер Ирины
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID записи интеграции (опционально)
+      required: false
+      selector:
+        text:
+    text:
+      name: Текст
+      description: Текст для озвучки
+      required: true
+      example: "Привет, это тест"
+      selector:
+        text:
 
-import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
+say:
+  name: Озвучить с выбором режима
+  description: Озвучить текст через Ирину с выбором режима и колонки
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID записи интеграции (опционально)
+      required: false
+      selector:
+        text:
+    message:
+      name: Сообщение
+      description: Текст для озвучки
+      required: true
+      example: "Привет, это тест"
+      selector:
+        text:
+    mode:
+      name: Режим озвучки
+      description: Где воспроизводить текст
+      required: false
+      default: "both"
+      example: "both"
+      selector:
+        select:
+          options:
+            - value: "irene"
+              label: "🎤 Только сервер Ирины"
+            - value: "media_player"
+              label: "🔊 Только колонка"
+            - value: "both"
+              label: "🎤🔊 Обе"
+    media_player:
+      name: Медиаплеер
+      description: Медиаплеер для озвучки (переопределяет настройку)
+      required: false
+      example: "media_player.yandex_station"
+      selector:
+        entity:
+          domain: media_player
 
-from .const import (
-    DOMAIN,
-    CONF_MEDIA_PLAYER,
-    CONF_TTS_MODE,
-    TTS_MODE_IRENE,
-    TTS_MODE_MEDIA_PLAYER,
-    TTS_MODE_BOTH,
-    TTS_MODES,
-)
-from .coordinator import IreneCoordinator
+control_device:
+  name: Управление устройством
+  description: Управить устройством через Ирину
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID записи интеграции (опционально)
+      required: false
+      selector:
+        text:
+    command:
+      name: Команда
+      description: Команда для управления устройством
+      required: true
+      example: "Включи свет в спальне"
+      selector:
+        text:
 
-_LOGGER = logging.getLogger(__name__)
+get_chat_history:
+  name: Получить историю чата
+  description: Получить историю сообщений с Ириной
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID записи интеграции (опционально)
+      required: false
+      selector:
+        text:
+    limit:
+      name: Лимит
+      description: Максимальное количество сообщений
+      required: false
+      default: 50
+      example: 50
+      selector:
+        number:
+          min: 1
+          max: 1000
+          step: 1
 
-
-def _get_coordinator(hass: HomeAssistant, entry_id: str | None) -> IreneCoordinator:
-    """Get coordinator by entry_id or first available."""
-    if entry_id:
-        if entry_id not in hass.data[DOMAIN]:
-            raise HomeAssistantError(f"Irene entry {entry_id} not found")
-        return hass.data[DOMAIN][entry_id]
-    
-    coordinators = [v for v in hass.data[DOMAIN].values() if isinstance(v, IreneCoordinator)]
-    if not coordinators:
-        raise HomeAssistantError("No Irene Voice Assistant configured")
-    return coordinators[0]
-
-
-def async_setup_services(hass: HomeAssistant) -> None:
-    """Set up services for Irene."""
-    
-    async def handle_send_command(call: ServiceCall) -> None:
-        """Handle send command service."""
-        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
-        await coordinator.send_text_command(call.data["command"])
-    
-    async def handle_tts_say(call: ServiceCall) -> None:
-        """Handle TTS say service."""
-        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
-        await coordinator.tts_say(call.data["text"])
-    
-    # ✅ НОВЫЙ сервис: say с поддержкой режима и колонки
-    async def handle_say(call: ServiceCall) -> None:
-        """Say text through Irene with mode selection."""
-        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
-        message = call.data["message"]
-        mode = call.data.get("mode", coordinator.tts_mode)
-        media_player = call.data.get("media_player") or coordinator.media_player_entity
-        
-        await coordinator.tts_say_with_mode(
-            message=message,
-            mode=mode,
-            media_player=media_player,
-        )
-    
-    # ✅ НОВЫЙ сервис: control_device
-    async def handle_control_device(call: ServiceCall) -> None:
-        """Control device through Irene."""
-        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
-        command = call.data["command"]
-        response = await coordinator.send_text_command(command)
-        _LOGGER.info(f"Control response: {response}")
-    
-    async def handle_get_chat_history(call: ServiceCall) -> dict:
-        """Handle get chat history service."""
-        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
-        return {"history": coordinator.get_chat_history(call.data.get("limit", 50))}
-    
-    async def handle_clear_chat_history(call: ServiceCall) -> None:
-        """Handle clear chat history service."""
-        coordinator = _get_coordinator(hass, call.data.get("entry_id"))
-        coordinator.clear_history()
-    
-    # Регистрируем сервисы
-    hass.services.async_register(
-        DOMAIN, "send_command", handle_send_command,
-        schema=vol.Schema({
-            vol.Optional("entry_id"): cv.string,
-            vol.Required("command"): cv.string,
-        }),
-    )
-    
-    hass.services.async_register(
-        DOMAIN, "tts_say", handle_tts_say,
-        schema=vol.Schema({
-            vol.Optional("entry_id"): cv.string,
-            vol.Required("text"): cv.string,
-        }),
-    )
-    
-    # ✅ НОВЫЙ сервис
-    hass.services.async_register(
-        DOMAIN, "say", handle_say,
-        schema=vol.Schema({
-            vol.Optional("entry_id"): cv.string,
-            vol.Required("message"): cv.string,
-            vol.Optional("mode", default=TTS_MODE_BOTH): vol.In(TTS_MODES),
-            vol.Optional("media_player"): cv.string,
-        }),
-    )
-    
-    # ✅ НОВЫЙ сервис
-    hass.services.async_register(
-        DOMAIN, "control_device", handle_control_device,
-        schema=vol.Schema({
-            vol.Optional("entry_id"): cv.string,
-            vol.Required("command"): cv.string,
-        }),
-    )
-    
-    hass.services.async_register(
-        DOMAIN, "get_chat_history", handle_get_chat_history,
-        schema=vol.Schema({
-            vol.Optional("entry_id"): cv.string,
-            vol.Optional("limit", default=50): cv.positive_int,
-        }),
-    )
-    
-    hass.services.async_register(
-        DOMAIN, "clear_chat_history", handle_clear_chat_history,
-        schema=vol.Schema({
-            vol.Optional("entry_id"): cv.string,
-        }),
-    )
-
-
-def async_unload_services(hass: HomeAssistant) -> None:
-    """Unload Irene services."""
-    for service in ["send_command", "tts_say", "say", "control_device", 
-                    "get_chat_history", "clear_chat_history"]:
-        if hass.services.has_service(DOMAIN, service):
-            hass.services.async_remove(DOMAIN, service)
+clear_chat_history:
+  name: Очистить историю чата
+  description: Очистить историю сообщений с Ириной
+  fields:
+    entry_id:
+      name: Entry ID
+      description: ID записи интеграции (опционально)
+      required: false
+      selector:
+        text:
