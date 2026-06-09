@@ -6,9 +6,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import aiohttp
+
 from homeassistant.components.tts import TextToSpeechEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -26,7 +29,7 @@ async def async_setup_entry(
     coordinator: IreneCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     
     async_add_entities([
-        IreneTTSEntity(coordinator, config_entry),
+        IreneTTSEntity(hass, coordinator, config_entry),
     ])
     
     _LOGGER.info(f"Irene TTS entity registered: {config_entry.title}")
@@ -39,10 +42,12 @@ class IreneTTSEntity(TextToSpeechEntity):
     
     def __init__(
         self,
+        hass: HomeAssistant,
         coordinator: IreneCoordinator,
         config_entry: ConfigEntry,
     ) -> None:
         """Initialize the TTS entity."""
+        self.hass = hass
         self.coordinator = coordinator
         self._attr_unique_id = f"{config_entry.entry_id}_tts"
         self._attr_name = f"{coordinator.name} TTS"
@@ -60,7 +65,7 @@ class IreneTTSEntity(TextToSpeechEntity):
     @property
     def supported_options(self) -> list[str]:
         """Return list of supported options."""
-        return ["voice", "speed"]
+        return []
     
     async def async_get_tts_audio(
         self, 
@@ -68,16 +73,36 @@ class IreneTTSEntity(TextToSpeechEntity):
         language: str, 
         options: dict[str, Any]
     ) -> tuple[str | None, bytes | None]:
-        """Load TTS from Irene."""
+        """Load TTS from Irene.
+        
+        Returns:
+            Tuple of (file_extension, audio_bytes)
+        """
         try:
             _LOGGER.info(f"TTS request: '{message}' (lang: {language})")
             
-            # Отправляем текст на сервер Ирины для озвучки
-            await self.coordinator.tts_say(message)
+            # Получаем URL WAV файла от Ирины через WebSocket
+            audio_url = await self.coordinator._get_tts_audio_url(message, timeout=15.0)
             
-            # Возвращаем пустой WAV чтобы HA не ругался
-            return "wav", b""
+            if not audio_url:
+                _LOGGER.warning("Failed to get TTS audio URL from Irene")
+                return None, None
+            
+            # Формируем полный URL
+            full_url = f"{self.coordinator.base_url}{audio_url}"
+            _LOGGER.info(f"Downloading TTS audio from: {full_url}")
+            
+            # Скачиваем WAV файл
+            session = async_get_clientsession(self.hass, verify_ssl=False)
+            async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    audio_bytes = await response.read()
+                    _LOGGER.info(f"TTS audio downloaded: {len(audio_bytes)} bytes")
+                    return "wav", audio_bytes
+                else:
+                    _LOGGER.error(f"Failed to download TTS audio: HTTP {response.status}")
+                    return None, None
             
         except Exception as err:
-            _LOGGER.error(f"TTS error: {err}")
+            _LOGGER.error(f"TTS error: {err}", exc_info=True)
             return None, None
