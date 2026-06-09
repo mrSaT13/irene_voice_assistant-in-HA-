@@ -40,7 +40,6 @@ async def async_setup_entry(
         
         if msg_type == "text" and content:
             _LOGGER.info(f"Irene message -> HA notification: {content}")
-            # Создаем HA событие для уведомлений
             hass.bus.async_fire(
                 "irene_notification",
                 {
@@ -79,12 +78,14 @@ class IreneNotifyEntity(NotifyEntity):
         self._attr_unique_id = f"{config_entry.entry_id}_notify"
         self._attr_icon = "mdi:robot"
     
-    async def async_send_message(self, message: str, title: str | None = None, **kwargs: Any) -> None:
+    async def async_send_message(self, message: str, **kwargs: Any) -> None:
         """Send notification via Irene TTS."""
+        title = kwargs.get("title")
         text_to_say = f"{title}: {message}" if title else message
         
         try:
-            await self.coordinator.tts_say(text_to_say)
+            # ✅ Используем tts_say_with_mode для озвучки с учётом настроек
+            await self.coordinator.tts_say_with_mode(text_to_say)
             _LOGGER.info(f"TTS message sent: {text_to_say}")
         except Exception as err:
             _LOGGER.error(f"Error sending TTS notification: {err}")
