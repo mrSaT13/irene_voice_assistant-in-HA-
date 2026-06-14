@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
 [![GitHub release](https://img.shields.io/github/release/mrSaT13/irene_voice_assistant-in-HA-.svg)](https://GitHub.com/mrSaT13/irene_voice_assistant-in-HA-/releases/)
 
-🇷🇺 Профессиональная интеграция голосового ассистента [Irene](https://github.com/AlexeyBond/Irene-Voice-Assistant) с Home Assistant
+интеграция голосового ассистента [Irene](https://github.com/AlexeyBond/Irene-Voice-Assistant) с Home Assistant
 
 
 ## 🚀 Возможности
