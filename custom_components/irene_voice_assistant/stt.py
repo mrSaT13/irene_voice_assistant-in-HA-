@@ -4,18 +4,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, AsyncIterable
 
 import aiohttp
 
+# Импортируем актуальные классы для HA 2023.5+
 from homeassistant.components.stt import (
     AudioEncoding,
+    AudioFormat,
     SpeechMetadata,
     SpeechResult,
+    SpeechResultState,
     SpeechToTextEntity,
-    StreamState,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -72,29 +73,28 @@ class IreneSTTEntity(SpeechToTextEntity):
         return ["ru", "en"]
     
     @property
-    def supported_formats(self) -> list[AudioEncoding]:
-        """Return supported audio formats."""
-        return [AudioEncoding.WAV, AudioEncoding.LINEAR16]
-    
-    @property
-    def supported_bit_rates(self) -> list[int]:
-        """Return supported bit rates."""
-        return [16000]
-    
-    @property
-    def supported_bit_sample_sizes(self) -> list[int]:
-        """Return supported bit sample sizes."""
-        return [16]
-    
-    @property
-    def supported_channels(self) -> list[int]:
-        """Return supported channels."""
-        return [1]
-    
+    def supported_formats(self) -> list[AudioFormat]:
+        """Return supported audio formats (упаковываем все параметры в AudioFormat)."""
+        return [
+            AudioFormat(
+                codec=AudioEncoding.WAV,
+                bit_rate=16000,
+                sample_size=16,
+                channels=1,
+            ),
+            AudioFormat(
+                codec=AudioEncoding.LINEAR16,
+                bit_rate=16000,
+                sample_size=16,
+                channels=1,
+            ),
+        ]
+
+    # ВАЖНО: Порядок аргументов теперь (metadata, stream)
     async def async_process_audio_stream(
         self,
-        stream: AsyncIterable[bytes],
         metadata: SpeechMetadata,
+        stream: AsyncIterable[bytes],
     ) -> SpeechResult:
         """Process audio stream and return recognized text."""
         try:
@@ -122,13 +122,13 @@ class IreneSTTEntity(SpeechToTextEntity):
                 msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
                 if msg.get("type") != MSG_NEGOTIATE_AGREE:
                     _LOGGER.error(f"STT negotiate failed: {msg}")
-                    return SpeechResult(None, StreamState.ERROR)
+                    return SpeechResult(None, SpeechResultState.ERROR)
                 
                 # Ждём READY
                 msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
                 if msg.get("type") != MSG_IN_STT_SERVERSIDE_READY:
                     _LOGGER.error(f"STT not ready: {msg}")
-                    return SpeechResult(None, StreamState.ERROR)
+                    return SpeechResult(None, SpeechResultState.ERROR)
                 
                 _LOGGER.info("STT server ready, sending audio")
                 
@@ -146,14 +146,15 @@ class IreneSTTEntity(SpeechToTextEntity):
                     if msg.get("type") == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
                         text = msg.get("text", "")
                         _LOGGER.info(f"STT recognized: {text}")
-                        return SpeechResult(text, StreamState.END)
+                        # Используем SpeechResultState.SUCCESS
+                        return SpeechResult(text, SpeechResultState.SUCCESS)
                     else:
                         _LOGGER.error(f"STT error: {msg}")
-                        return SpeechResult(None, StreamState.ERROR)
+                        return SpeechResult(None, SpeechResultState.ERROR)
                 except asyncio.TimeoutError:
                     _LOGGER.error("STT timeout waiting for recognition")
-                    return SpeechResult(None, StreamState.ERROR)
+                    return SpeechResult(None, SpeechResultState.ERROR)
             
         except Exception as err:
             _LOGGER.error(f"STT error: {err}", exc_info=True)
-            return SpeechResult(None, StreamState.ERROR)
+            return SpeechResult(None, SpeechResultState.ERROR)
