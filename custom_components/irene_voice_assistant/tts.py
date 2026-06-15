@@ -1,5 +1,5 @@
 # custom_components/irene_voice_assistant/tts.py
-"""TTS platform for Irene Voice Assistant."""
+"""TTS platform for Irene Voice Assistant using simple HTTP endpoint."""
 
 from __future__ import annotations
 
@@ -27,19 +27,15 @@ async def async_setup_entry(
 ) -> None:
     """Set up TTS platform."""
     coordinator: IreneCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    
-    async_add_entities([
-        IreneTTSEntity(hass, coordinator, config_entry),
-    ])
-    
+    async_add_entities([IreneTTSEntity(hass, coordinator, config_entry)])
     _LOGGER.info(f"Irene TTS entity registered: {config_entry.title}")
 
 
 class IreneTTSEntity(TextToSpeechEntity):
-    """Irene TTS entity."""
-    
+    """Irene TTS entity using simple /ttsWav endpoint."""
+
     _attr_name = None
-    
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -51,60 +47,47 @@ class IreneTTSEntity(TextToSpeechEntity):
         self.coordinator = coordinator
         self._attr_unique_id = f"{config_entry.entry_id}_tts"
         self._attr_name = f"{coordinator.name} TTS"
-    
+
     @property
     def default_language(self) -> str:
         """Return the default language."""
         return "ru"
-    
+
     @property
     def supported_languages(self) -> list[str]:
         """Return the list of supported languages."""
         return ["ru", "en"]
-    
+
     @property
     def supported_options(self) -> list[str]:
         """Return list of supported options."""
         return []
-    
+
     async def async_get_tts_audio(
-        self, 
-        message: str, 
-        language: str, 
+        self,
+        message: str,
+        language: str,
         options: dict[str, Any]
     ) -> tuple[str | None, bytes | None]:
-        """Load TTS from Irene."""
+        """Load TTS from Irene using /ttsWav endpoint."""
         try:
             _LOGGER.info(f"TTS request: '{message}' (lang: {language})")
-            
-            # 1. Получаем URL WAV файла от Ирины через координатор
-            audio_url = await self.coordinator._get_tts_audio_url(message, timeout=15.0)
-            
-            if not audio_url:
-                _LOGGER.error("Irene coordinator returned empty audio_url for TTS")
-                return None, None
-            
-            # 2. Умная склейка URL (защита от дублирования http:// или https://)
-            if audio_url.startswith("http://") or audio_url.startswith("https://"):
-                full_url = audio_url
-            else:
-                full_url = f"{self.coordinator.base_url.rstrip('/')}/{audio_url.lstrip('/')}"
-                
-            _LOGGER.info(f"Downloading TTS audio from: {full_url}")
-            
-            # 3. Скачиваем WAV файл
+
+            # Используем простой HTTP endpoint /ttsWav
+            url = f"{self.coordinator.base_url}/ttsWav?text={message}"
+            _LOGGER.info(f"Downloading TTS audio from: {url}")
+
             session = async_get_clientsession(self.hass, verify_ssl=False)
-            async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status == 200:
                     audio_bytes = await response.read()
                     _LOGGER.info(f"TTS audio downloaded successfully: {len(audio_bytes)} bytes")
                     return "wav", audio_bytes
                 else:
-                    # ✅ ВАЖНО: Читаем текст ошибки, чтобы понять, почему Ирина не отдала файл
                     error_text = await response.text()
                     _LOGGER.error(f"Failed to download TTS audio: HTTP {response.status}. Response: {error_text[:200]}")
                     return None, None
-            
+
         except Exception as err:
             _LOGGER.error(f"TTS error: {err}", exc_info=True)
             return None, None
