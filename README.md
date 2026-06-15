@@ -47,4 +47,8 @@
    - **SSL**: включите если используете HTTPS
    - **Name**: имя ассистента (по умолчанию `Irene`)
 
+## 🙏 Благодарности
+
+* Огромная благодарность **[janvarev](https://github.com/janvarev)** за создание и развитие оригинального голосового ассистента [Irene-Voice-Assistant](https://github.com/janvarev/Irene-Voice-Assistant).
+* Отдельное спасибо **[AlexeyBond](https://github.com/AlexeyBond)** за поддержку проекта и создание форка [Irene-Voice-Assistant](https://github.com/AlexeyBond/Irene-Voice-Assistant), с которым успешно работает данная интеграция.
 
