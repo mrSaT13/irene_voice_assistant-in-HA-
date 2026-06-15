@@ -9,7 +9,7 @@ from typing import Any, AsyncIterable
 
 import aiohttp
 
-# ✅ Импортируем актуальные классы для новых версий HA
+# ✅ Актуальные импорты для современных версий Home Assistant
 from homeassistant.components.stt import (
     AudioBitRates,
     AudioChannels,
@@ -75,7 +75,6 @@ class IreneSTTEntity(SpeechToTextEntity):
         """Return supported languages."""
         return ["ru", "en"]
     
-    # ✅ Теперь форматы, кодеки и параметры возвращаются через новые Enum
     @property
     def supported_formats(self) -> list[AudioFormats]:
         """Return supported audio formats."""
@@ -111,7 +110,6 @@ class IreneSTTEntity(SpeechToTextEntity):
         try:
             _LOGGER.info("Starting STT processing")
             
-            # Подключаемся к WebSocket Ирины
             ws_url = f"{self.coordinator.ws_base_url}{API_WEBSOCKET}"
             session = async_get_clientsession(self.hass, verify_ssl=False)
             
@@ -120,50 +118,69 @@ class IreneSTTEntity(SpeechToTextEntity):
                 timeout=15.0,
                 ssl=self.coordinator._ssl_context if self.coordinator._ssl_context else False,
             ) as ws:
-                # Negotiate STT protocol
+                # 1. Negotiate STT protocol
                 negotiate_msg = {
                     "type": MSG_NEGOTIATE_REQUEST,
-                    "protocols": [
-                        [PROTOCOL_IN_STT_SERVERSIDE],
-                    ]
+                    "protocols": [[PROTOCOL_IN_STT_SERVERSIDE]],
                 }
                 await ws.send_json(negotiate_msg)
                 
-                # Ждём готовность сервера
-                msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
-                if msg.get("type") != MSG_NEGOTIATE_AGREE:
-                    _LOGGER.error(f"STT negotiate failed: {msg}")
+                # 2. Ждём готовность сервера
+                msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    _LOGGER.error(f"STT negotiate failed, expected TEXT, got {msg.type}")
+                    return SpeechResult(None, SpeechResultState.ERROR)
+                    
+                data = msg.json()
+                if data.get("type") != MSG_NEGOTIATE_AGREE:
+                    _LOGGER.error(f"STT negotiate failed: {data}")
                     return SpeechResult(None, SpeechResultState.ERROR)
                 
-                # Ждём READY
-                msg = await asyncio.wait_for(ws.receive_json(), timeout=10.0)
-                if msg.get("type") != MSG_IN_STT_SERVERSIDE_READY:
-                    _LOGGER.error(f"STT not ready: {msg}")
+                # 3. Ждём READY
+                msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    _LOGGER.error(f"STT not ready, expected TEXT, got {msg.type}")
+                    return SpeechResult(None, SpeechResultState.ERROR)
+                    
+                data = msg.json()
+                if data.get("type") != MSG_IN_STT_SERVERSIDE_READY:
+                    _LOGGER.error(f"STT not ready: {data}")
                     return SpeechResult(None, SpeechResultState.ERROR)
                 
                 _LOGGER.info("STT server ready, sending audio")
                 
-                # Отправляем аудио чанками
+                # 4. Отправляем аудио чанками
                 async for chunk in stream:
                     if chunk:
                         await ws.send_bytes(chunk)
                 
-                # Отправляем конец потока
-                await ws.send_bytes(b"")
+                # ✅ ВАЖНО: НЕ отправляем b"" в конце, это ломает протокол Ирины (ошибка 4500)
+                _LOGGER.info("Audio stream finished, waiting for recognition result...")
                 
-                # Ждём распознанный текст
+                # 5. Ждём распознанный текст в цикле, корректно обрабатывая закрытие соединения
                 try:
-                    msg = await asyncio.wait_for(ws.receive_json(), timeout=15.0)
-                    if msg.get("type") == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
-                        text = msg.get("text", "")
-                        _LOGGER.info(f"STT recognized: {text}")
-                        # ✅ Используем SpeechResultState.SUCCESS
-                        return SpeechResult(text, SpeechResultState.SUCCESS)
-                    else:
-                        _LOGGER.error(f"STT error: {msg}")
-                        return SpeechResult(None, SpeechResultState.ERROR)
+                    while True:
+                        msg = await asyncio.wait_for(ws.receive(), timeout=15.0)
+                        
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = msg.json()
+                            if data.get("type") == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
+                                text = data.get("text", "").strip()
+                                _LOGGER.info(f"STT recognized: '{text}'")
+                                return SpeechResult(text, SpeechResultState.SUCCESS)
+                            else:
+                                _LOGGER.debug(f"Received other STT message: {data}")
+                                
+                        elif msg.type == aiohttp.WSMsgType.CLOSE:
+                            _LOGGER.error(f"STT server closed connection. Code: {msg.data}, Extra: {msg.extra}")
+                            return SpeechResult(None, SpeechResultState.ERROR)
+                            
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
+                            _LOGGER.error(f"STT connection lost or error: {msg.type}")
+                            return SpeechResult(None, SpeechResultState.ERROR)
+                            
                 except asyncio.TimeoutError:
-                    _LOGGER.error("STT timeout waiting for recognition")
+                    _LOGGER.error("STT timeout waiting for recognition result")
                     return SpeechResult(None, SpeechResultState.ERROR)
             
         except Exception as err:
