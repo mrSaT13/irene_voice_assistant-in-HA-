@@ -166,7 +166,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.info(f"Connecting to WebSocket: {ws_url}")
                 
                 # ✅ ИСПРАВЛЕНИЕ 1: Убираем heartbeat и autoping!
-                # Они отправляют PING-фреймы, которые ломают плагин Ирины (KeyError: 'text')
+                # Плагин Ирины не умеет обрабатывать PING-фреймы и рвет соединение с ошибкой KeyError: 'text'
                 self.ws_connection = await self.session.ws_connect(
                     ws_url,
                     timeout=15.0,
@@ -189,6 +189,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _negotiate_protocols(self) -> None:
         # ✅ ИСПРАВЛЕНИЕ 2: Жестко прописываем протоколы точно по документации Ирины!
+        # Это гарантирует, что сервер поймет, что мы хотим получать аудио (out.tts.serverside)
         negotiate_msg = {
             "type": "negotiate/request",
             "protocols": [
@@ -230,11 +231,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         _LOGGER.error(f"WS error: {self.ws_connection.exception()}")
                         break
                 except asyncio.TimeoutError:
-                    try:
-                        if self.ws_connection and not self.ws_connection.closed:
-                            await self.ws_connection.ping()
-                    except Exception:
-                        break
+                    # ✅ ИСПРАВЛЕНИЕ 3: Убираем отправку PING при таймауте!
+                    # Просто продолжаем ждать следующих сообщений, не провоцируя разрыв соединения.
                     continue
                 except Exception as err:
                     _LOGGER.error(f"WS listener error: {err}")
@@ -381,6 +379,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             })
             
             # ✅ ИСПРАВЛЕНИЕ: Не шлем playback-done, если это TTS запрос!
+            # Мы сами скачаем файл и отправим на колонку HA. Если послать done сразу, Ирина удалит файл.
             if not self._tts_request and playback_id:
                 try:
                     await self.ws_connection.send_json({
@@ -525,7 +524,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ✅ ПОЛНОСТЬЮ ПЕРЕПИСАННЫЙ МЕТОД: Получение URL WAV файла от Ирины
     async def _get_tts_audio_url(self, message: str, timeout: float = 15.0) -> Optional[str]:
-        """Отправить текст через WebSocket и получить URL WAV файла.
+        """Отправить текст и получить URL WAV файла (WebSocket с fallback на HTTP API).
         
         Returns:
             URL WAV файла (например, /api/web-audio-link-output/files/xxx.wav)
