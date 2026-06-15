@@ -9,10 +9,13 @@ from typing import Any, AsyncIterable
 
 import aiohttp
 
-# Импортируем актуальные классы для HA 2023.5+
+# ✅ Импортируем актуальные классы для новых версий HA
 from homeassistant.components.stt import (
-    AudioEncoding,
-    AudioFormat,
+    AudioBitRates,
+    AudioChannels,
+    AudioCodecs,
+    AudioFormats,
+    AudioSampleRates,
     SpeechMetadata,
     SpeechResult,
     SpeechResultState,
@@ -72,25 +75,33 @@ class IreneSTTEntity(SpeechToTextEntity):
         """Return supported languages."""
         return ["ru", "en"]
     
+    # ✅ Теперь форматы, кодеки и параметры возвращаются через новые Enum
     @property
-    def supported_formats(self) -> list[AudioFormat]:
-        """Return supported audio formats (упаковываем все параметры в AudioFormat)."""
-        return [
-            AudioFormat(
-                codec=AudioEncoding.WAV,
-                bit_rate=16000,
-                sample_size=16,
-                channels=1,
-            ),
-            AudioFormat(
-                codec=AudioEncoding.LINEAR16,
-                bit_rate=16000,
-                sample_size=16,
-                channels=1,
-            ),
-        ]
+    def supported_formats(self) -> list[AudioFormats]:
+        """Return supported audio formats."""
+        return [AudioFormats.WAV]
+    
+    @property
+    def supported_codecs(self) -> list[AudioCodecs]:
+        """Return supported audio codecs."""
+        return [AudioCodecs.PCM]
+    
+    @property
+    def supported_bit_rates(self) -> list[AudioBitRates]:
+        """Return supported bit rates."""
+        return [AudioBitRates.BITRATE_16]
+    
+    @property
+    def supported_sample_rates(self) -> list[AudioSampleRates]:
+        """Return supported sample rates."""
+        return [AudioSampleRates.SAMPLERATE_16000]
+    
+    @property
+    def supported_channels(self) -> list[AudioChannels]:
+        """Return supported channels."""
+        return [AudioChannels.CHANNEL_MONO]
 
-    # ВАЖНО: Порядок аргументов теперь (metadata, stream)
+    # ✅ ВАЖНО: Порядок аргументов теперь (metadata, stream)
     async def async_process_audio_stream(
         self,
         metadata: SpeechMetadata,
@@ -146,7 +157,7 @@ class IreneSTTEntity(SpeechToTextEntity):
                     if msg.get("type") == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
                         text = msg.get("text", "")
                         _LOGGER.info(f"STT recognized: {text}")
-                        # Используем SpeechResultState.SUCCESS
+                        # ✅ Используем SpeechResultState.SUCCESS
                         return SpeechResult(text, SpeechResultState.SUCCESS)
                     else:
                         _LOGGER.error(f"STT error: {msg}")
