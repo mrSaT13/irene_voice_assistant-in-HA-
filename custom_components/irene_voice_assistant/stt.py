@@ -1,11 +1,11 @@
-# custom_components/irene_voice_assistant/stt.py
-"""STT platform for Irene Voice Assistant using simple WebSocket."""
+"""STT platform for Irene Voice Assistant."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import Any, AsyncIterable
+from typing import AsyncIterable
 
 import aiohttp
 
@@ -45,7 +45,13 @@ async def async_setup_entry(
 class IreneSTTEntity(SpeechToTextEntity):
     """Irene STT entity using simple WebSocket /wsmic."""
 
-    def __init__(self, hass: HomeAssistant, coordinator: IreneCoordinator, config_entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        coordinator: IreneCoordinator,
+        config_entry: ConfigEntry,
+    ) -> None:
+        """Initialize the STT entity."""
         self.hass = hass
         self.coordinator = coordinator
         self._attr_unique_id = f"{config_entry.entry_id}_stt"
@@ -53,26 +59,32 @@ class IreneSTTEntity(SpeechToTextEntity):
 
     @property
     def supported_languages(self) -> list[str]:
+        """Return the list of supported languages."""
         return ["ru", "en"]
 
     @property
     def supported_formats(self) -> list[AudioFormats]:
+        """Return the list of supported formats."""
         return [AudioFormats.WAV]
 
     @property
     def supported_codecs(self) -> list[AudioCodecs]:
+        """Return the list of supported codecs."""
         return [AudioCodecs.PCM]
 
     @property
     def supported_bit_rates(self) -> list[AudioBitRates]:
+        """Return the list of supported bit rates."""
         return [AudioBitRates.BITRATE_16]
 
     @property
     def supported_sample_rates(self) -> list[AudioSampleRates]:
+        """Return the list of supported sample rates."""
         return [AudioSampleRates.SAMPLERATE_16000]
 
     @property
     def supported_channels(self) -> list[AudioChannels]:
+        """Return the list of supported channels."""
         return [AudioChannels.CHANNEL_MONO]
 
     async def async_process_audio_stream(
@@ -109,7 +121,6 @@ class IreneSTTEntity(SpeechToTextEntity):
                 msg = await asyncio.wait_for(ws.receive(), timeout=30.0)
                 
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    import json
                     data = json.loads(msg.data)
                     text = data.get("text", "").strip()
                     
