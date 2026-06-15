@@ -77,26 +77,32 @@ class IreneTTSEntity(TextToSpeechEntity):
         try:
             _LOGGER.info(f"TTS request: '{message}' (lang: {language})")
             
-            # Получаем URL WAV файла от Ирины через WebSocket
+            # 1. Получаем URL WAV файла от Ирины через координатор
             audio_url = await self.coordinator._get_tts_audio_url(message, timeout=15.0)
             
             if not audio_url:
-                _LOGGER.warning("Failed to get TTS audio URL from Irene")
+                _LOGGER.error("Irene coordinator returned empty audio_url for TTS")
                 return None, None
             
-            # Формируем полный URL
-            full_url = f"{self.coordinator.base_url}{audio_url}"
+            # 2. Умная склейка URL (защита от дублирования http:// или https://)
+            if audio_url.startswith("http://") or audio_url.startswith("https://"):
+                full_url = audio_url
+            else:
+                full_url = f"{self.coordinator.base_url.rstrip('/')}/{audio_url.lstrip('/')}"
+                
             _LOGGER.info(f"Downloading TTS audio from: {full_url}")
             
-            # Скачиваем WAV файл
+            # 3. Скачиваем WAV файл
             session = async_get_clientsession(self.hass, verify_ssl=False)
             async with session.get(full_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status == 200:
                     audio_bytes = await response.read()
-                    _LOGGER.info(f"TTS audio downloaded: {len(audio_bytes)} bytes")
+                    _LOGGER.info(f"TTS audio downloaded successfully: {len(audio_bytes)} bytes")
                     return "wav", audio_bytes
                 else:
-                    _LOGGER.error(f"Failed to download TTS audio: HTTP {response.status}")
+                    # ✅ ВАЖНО: Читаем текст ошибки, чтобы понять, почему Ирина не отдала файл
+                    error_text = await response.text()
+                    _LOGGER.error(f"Failed to download TTS audio: HTTP {response.status}. Response: {error_text[:200]}")
                     return None, None
             
         except Exception as err:
