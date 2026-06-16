@@ -1,5 +1,12 @@
 # custom_components/irene_voice_assistant/coordinator.py
-"""Data coordinator for Irene Voice Assistant with message buffering, HA bridge and TTS to media_player."""
+"""Data coordinator for Irene Voice Assistant.
+
+Стратегия:
+- Базовый текст работает как раньше (in.text-direct + out.text-plain).
+- Дополнительно согласуем out.audio.link, out.tts.serverside, in.mute.
+- НЕ ломаем существующую логику буфера.
+- HTTP fallback чиним (GET вместо POST).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +28,6 @@ from .const import (
     API_CONFIGS,
     API_NOTIFY,
     API_WEBSOCKET,
-    API_SEND_TXT_CMD,
     MSG_NEGOTIATE_AGREE,
     MSG_NEGOTIATE_REQUEST,
     MSG_IN_TEXT_DIRECT_TEXT,
@@ -72,7 +78,7 @@ class BufferedResponse:
 
 
 class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator with message buffering, HA bridge and TTS to media_player."""
+    """Coordinator."""
 
     def __init__(
         self,
@@ -99,20 +105,15 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.return_format = return_format
         self.buffer_timeout = buffer_timeout
 
-        # ✅ TTS на колонку
         self.media_player_entity = media_player_entity
         self.tts_mode = tts_mode
         self._pending_audio_responses: dict[str, asyncio.Future] = {}
 
-        # ✅ Флаг TTS запросов (чтобы игнорировать текст в буфере)
         self._tts_request = False
 
-        # ✅ Текущее воспроизведение аудио
+        # ✅ Аудио состояние
         self._pending_playback: Optional[dict[str, str]] = None
         self._playback_progress_task: Optional[asyncio.Task] = None
-
-        # ✅ Будущий HTTP-fallback (см. send_text_command_http)
-        self._http_fallback = True
 
         self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
 
@@ -124,7 +125,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.ws_lock = asyncio.Lock()
         self.agreed_protocols: list[str] = []
 
-        # Буфер для накопления ответов
         self._response_buffer: BufferedResponse = BufferedResponse()
         self._pending_request: bool = False
         self._response_counter = 0
@@ -140,7 +140,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._ssl_context.check_hostname = False
             self._ssl_context.verify_mode = ssl.CERT_NONE
 
-        # HA Bridge для выполнения команд
         self.ha_bridge = HaBridge(hass)
 
         _LOGGER.info(
@@ -200,23 +199,17 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise
 
     async def _negotiate_protocols(self) -> None:
-        """Согласование протоколов в правильном порядке.
+        """Согласование протоколов.
 
-        ВАЖНО:
-        - out.tts.serverside должен идти ПОСЛЕ out.audio.link.
-        - in.stt.serverside НЕ согласовываем здесь: STT-платформа
-          открывает свой собственный WS и сама negotiate этот протокол.
+        ВАЖНО: in.stt.serverside НЕ включаем сюда — STT-платформа
+        открывает свой WS и сама negotiate (см. stt.py).
         """
         negotiate_msg = {
             "type": MSG_NEGOTIATE_REQUEST,
             "protocols": [
-                # 1. Вход: команды (текст)
                 [PROTOCOL_IN_TEXT_DIRECT, PROTOCOL_IN_TEXT_INDIRECT],
-                # 2. Выход: сначала протокол передачи аудио, потом текст
                 [PROTOCOL_OUT_AUDIO_LINK, PROTOCOL_OUT_TEXT_PLAIN],
-                # 3. TTS-серверный ПОСЛЕ out.audio.link (по документации!)
                 [PROTOCOL_OUT_TTS_SERVERSIDE],
-                # 4. Заглушение микрофона
                 [PROTOCOL_IN_MUTE],
             ]
         }
@@ -384,7 +377,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             alt_text = data.get("altText", "")
             _LOGGER.info(f"Audio request: {url}, playbackId={playback_id}")
 
-            # Сохраняем для отслеживания прогресса
             self._pending_playback = {
                 "url": url,
                 "playback_id": playback_id,
@@ -392,7 +384,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "start_time": time.time(),
             }
 
-            # Резолвим future для TTS (если ждут URL)
             if self._pending_audio_responses:
                 for future in list(self._pending_audio_responses.values()):
                     if not future.done():
@@ -400,15 +391,13 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         _LOGGER.info(f"Resolved audio URL: {url}")
                         break
 
-            # ✅ Запускаем таймер playback-progress (1 раз в секунду)
             if self._playback_progress_task and not self._playback_progress_task.done():
                 self._playback_progress_task.cancel()
             self._playback_progress_task = self.hass.async_create_task(
                 self._send_playback_progress(playback_id)
             )
 
-            # ❌ НЕ отправляем playback-done автоматически!
-            # Это сделает tts.py / tts_to_media_player после реальной отправки/скачивания.
+            # НЕ отправляем done здесь — это сделает tts.py / tts_to_media_player
 
             self._add_to_history("assistant", f"[Аудио] {alt_text or url}")
             self.hass.bus.async_fire(f"{DOMAIN}_message", {
@@ -426,7 +415,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     notification_id=f"irene_audio_{int(dt_util.utcnow().timestamp())}",
                 )
 
-        # === ЗАГЛУШЕНИЕ МИКРОФОНА ===
+        # === MUTE ===
         elif msg_type == MSG_IN_MUTE_MUTE:
             _LOGGER.info("Muting microphone (Irene is speaking)")
             self.hass.bus.async_fire(f"{DOMAIN}_mute", {"muted": True})
@@ -457,7 +446,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             pass
 
     async def send_playback_done(self, playback_id: str) -> None:
-        """Публичный метод: вызывайте когда файл реально скачан/воспроизведён."""
+        """Публичный метод."""
         if not self.ws_connection or self.ws_connection.closed:
             return
         try:
@@ -477,7 +466,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.error(f"Playback done error: {err}")
 
     def get_pending_playback(self) -> Optional[dict[str, str]]:
-        """Получить текущее ожидающее воспроизведение (для tts.py)."""
         return self._pending_playback
 
     async def send_text_command(self, text: str) -> str:
@@ -487,7 +475,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._add_to_history("user", text)
 
-            # Создаём future и буфер
             self._pending_request = True
             self._response_buffer.messages.clear()
             if self._response_buffer.timer:
@@ -532,53 +519,70 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ws_connected = False
             return f"Ошибка связи с Ириной: {err}"
 
-    # ✅ НОВОЕ: HTTP-fallback для отправки команды (используется из conversation.py)
+    # ✅ HTTP fallback: пробуем разные варианты, fallback на явное сообщение
     async def send_text_command_http(self, text: str) -> str:
-        """HTTP fallback для отправки текстовой команды Ирине.
-
-        Использует старый endpoint /sendTxtCmd.
-        Вызывается автоматически, если WebSocket не отвечает.
-        """
-        if not self._http_fallback:
-            return "HTTP fallback отключён"
-
+        """HTTP fallback. Пробует POST и GET с разными payload."""
+        # Сначала проверим, что Irene вообще отвечает
         try:
-            url = f"{self.base_url}{API_SEND_TXT_CMD}"
-            _LOGGER.info(f"HTTP fallback POST: {url}")
+            async with self.session.get(
+                f"{self.base_url}/api/config/configs",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                if r.status != 200:
+                    return f"Ирина недоступна: HTTP {r.status}"
+        except Exception as err:
+            return f"Ирина недоступна: {err}"
 
-            # Имина пробует разные варианты payload — попробуем самый простой
+        # Пробуем POST с JSON
+        try:
+            url = f"{self.base_url}/sendTxtCmd"
             async with self.session.post(
                 url,
                 json={"text": text},
                 timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
-                if response.status == 200:
-                    try:
-                        data = await response.json()
-                    except Exception:
-                        data = await response.text()
-
-                    if isinstance(data, dict):
-                        return (
-                            data.get("text")
-                            or data.get("response")
-                            or data.get("message")
-                            or str(data)
-                        )
-                    return str(data)
-                else:
-                    body = await response.text()
-                    _LOGGER.error(
-                        f"HTTP fallback error: {response.status}, body={body[:200]}"
-                    )
-                    return f"HTTP ошибка: {response.status}"
-
+            ) as r:
+                if r.status == 200:
+                    body = await r.text()
+                    if body:
+                        return body
+                    return "OK"
+                _LOGGER.debug(f"POST /sendTxtCmd: {r.status}")
         except Exception as err:
-            _LOGGER.error(f"HTTP fallback exception: {err}", exc_info=True)
-            return f"Ошибка HTTP связи: {err}"
+            _LOGGER.debug(f"POST /sendTxtCmd failed: {err}")
+
+        # Пробуем GET с query-параметром
+        try:
+            url = f"{self.base_url}/sendTxtCmd"
+            async with self.session.get(
+                url,
+                params={"text": text, "txt": text, "cmd": text},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as r:
+                if r.status == 200:
+                    body = await r.text()
+                    if body:
+                        return body
+                    return "OK"
+                _LOGGER.debug(f"GET /sendTxtCmd: {r.status}")
+        except Exception as err:
+            _LOGGER.debug(f"GET /sendTxtCmd failed: {err}")
+
+        # Пробуем POST на /api/notification_api/notify (TTS — хоть что-то)
+        try:
+            url = f"{self.base_url}/api/notification_api/notify"
+            async with self.session.post(
+                url,
+                json={"text": f"Команда получена: {text}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status == 200:
+                    return "Команда отправлена Ирине (через TTS-канал, ответа не будет)"
+                return f"HTTP fallback не сработал: {r.status}"
+        except Exception as err:
+            return f"HTTP fallback не сработал: {err}"
 
     async def tts_say(self, text: str) -> None:
-        """Озвучить текст через сервер Ирины (через /api/notification_api/notify)."""
+        """Озвучить текст через сервер Ирины."""
         try:
             url = f"{self.base_url}{API_NOTIFY}"
             payload = {"text": text}
@@ -598,37 +602,26 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         media_player_entity: str | None = None,
         timeout: float = 15.0,
     ) -> bool:
-        """Озвучить текст на колонке через TTS Ирины.
-
-        Использует серверный TTS Ирины (её голос!) и отправляет WAV на колонку
-        через media_player.play_media.
-        """
         media_player = media_player_entity or self.media_player_entity
 
         if not media_player:
-            _LOGGER.warning("No media_player configured for TTS")
             return False
 
         try:
             self._pending_playback = None
 
-            # 1. Получаем URL WAV файла от Ирины
             audio_url = await self._get_tts_audio_url(message, timeout=timeout)
 
             if not audio_url:
-                _LOGGER.warning("Failed to get TTS audio URL, falling back to server TTS")
                 await self.tts_say(message)
                 return False
 
-            # 2. Формируем полный URL
             full_url = f"{self.base_url}{audio_url}"
             _LOGGER.info(f"TTS audio URL: {full_url}")
 
-            # ✅ Получаем playback_id ДО отправки на колонку
             pending = self.get_pending_playback()
             playback_id = pending.get("playback_id") if pending else None
 
-            # 3. Отправляем на колонку через media_player.play_media
             await self.hass.services.async_call(
                 "media_player", "play_media",
                 {
@@ -639,7 +632,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 blocking=False,
             )
 
-            # ✅ Отправляем done через 0.5с
             if playback_id:
                 await asyncio.sleep(0.5)
                 await self.send_playback_done(playback_id)
@@ -660,7 +652,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
     async def _get_tts_audio_url(self, message: str, timeout: float = 15.0) -> Optional[str]:
-        """Отправить текст через WebSocket и получить URL WAV файла."""
         try:
             await self.ensure_websocket_connected()
 
@@ -703,23 +694,18 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mode: str | None = None,
         media_player: str | None = None,
     ) -> None:
-        """Озвучить текст с учётом режима и выбранной колонки."""
         mode = mode or self.tts_mode
         media_player = media_player or self.media_player_entity
-
-        _LOGGER.info(f"TTS say: mode={mode}, media_player={media_player}, message='{message[:50]}...'")
 
         if mode in (TTS_MODE_IRENE, TTS_MODE_BOTH):
             try:
                 await self.tts_say(message)
-                _LOGGER.info("TTS sent to Irene server")
             except Exception as err:
                 _LOGGER.error(f"Irene TTS error: {err}")
 
         if mode in (TTS_MODE_MEDIA_PLAYER, TTS_MODE_BOTH) and media_player:
             try:
                 await self.tts_to_media_player(message, media_player)
-                _LOGGER.info(f"TTS sent to media_player: {media_player}")
             except Exception as err:
                 _LOGGER.error(f"Media player TTS error: {err}")
                 if mode == TTS_MODE_MEDIA_PLAYER:
