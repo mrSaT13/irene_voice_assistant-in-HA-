@@ -404,14 +404,14 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     texts = [m.get("text", "") for m in self._response_buffer.messages]
                     return "\n".join(texts)
                 return "Превышено время ожидания ответа от Ирины"
-        finally:
-            self._response_buffer.future = None
-            self._response_buffer.timer = None
-            self._pending_request = False
         except Exception as err:
             _LOGGER.error(f"Error sending command: {err}", exc_info=True)
             self.ws_connected = False
             return f"Ошибка связи с Ириной: {err}"
+        finally:
+            self._response_buffer.future = None
+            self._response_buffer.timer = None
+            self._pending_request = False
 
     async def tts_say(self, text: str) -> None:
         """Озвучить текст через сервер Ирины (через /api/notification_api/notify)."""
