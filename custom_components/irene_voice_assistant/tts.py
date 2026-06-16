@@ -62,23 +62,25 @@ class IreneTTSEntity(TextToSpeechEntity):
         language: str,
         options: dict[str, Any]
     ) -> tuple[str | None, bytes | None]:
-        """Load TTS from Irene using WebSocket protocol."""
+        """Load TTS from Irene using WebSocket protocol with HTTP fallback."""
         try:
             _LOGGER.info(f"TTS request: '{message}' (lang: {language})")
-            await self.coordinator.ensure_websocket_connected()
-
-            # 1. Устанавливаем флаг TTS и создаем Future для перехвата URL
-            self.coordinator._tts_request = True
-            loop = asyncio.get_event_loop()
-            self.coordinator.tts_audio_future = loop.create_future()
-
-            # 2. Отправляем текст в Ирину (это спровоцирует ответ с аудио)
-            ws_message = {"type": "in.text-direct/text", "text": message}
-            await self.coordinator.ws_connection.send_json(ws_message)
-
-            # 3. Ждем, пока coordinator перехватит out.audio.link/playback-request
+            
+            # ✅ ПРОБУЕМ СНАЧАЛА WebSocket
             try:
-                result = await asyncio.wait_for(self.coordinator.tts_audio_future, timeout=30.0)
+                await self.coordinator.ensure_websocket_connected()
+
+                # 1. Устанавливаем флаг TTS и создаем Future для перехвата URL
+                self.coordinator._tts_request = True
+                loop = asyncio.get_event_loop()
+                self.coordinator.tts_audio_future = loop.create_future()
+
+                # 2. Отправляем текст в Ирину (это спровоцирует ответ с аудио)
+                ws_message = {"type": "in.text-direct/text", "text": message}
+                await self.coordinator.ws_connection.send_json(ws_message)
+
+                # 3. Ждем, пока coordinator перехватит out.audio.link/playback-request
+                result = await asyncio.wait_for(self.coordinator.tts_audio_future, timeout=10.0)
                 audio_url = result["url"]
                 playback_id = result["playback_id"]
                 
@@ -102,12 +104,20 @@ class IreneTTSEntity(TextToSpeechEntity):
                         
                         return "wav", audio_bytes
                     else:
-                        error_text = await response.text()
-                        _LOGGER.error(f"Failed to download TTS audio: HTTP {response.status}. Response: {error_text[:200]}")
-                        return None, None
+                        _LOGGER.warning(f"HTTP {response.status}, trying fallback...")
 
-            except asyncio.TimeoutError:
-                _LOGGER.error("Timeout waiting for TTS audio URL from Irene")
+            except Exception as ws_err:
+                _LOGGER.warning(f"WebSocket TTS failed: {ws_err}, trying HTTP fallback...")
+
+            # ✅ FALLBACK: Пробуем старый HTTP endpoint /ttsWav
+            _LOGGER.info("Trying HTTP fallback for TTS...")
+            audio_bytes = await self.coordinator.tts_say_http(message)
+            
+            if audio_bytes and len(audio_bytes) > 100:
+                _LOGGER.info(f"HTTP TTS fallback succeeded: {len(audio_bytes)} bytes")
+                return "wav", audio_bytes
+            else:
+                _LOGGER.error("HTTP TTS fallback also failed")
                 return None, None
 
         except Exception as err:
