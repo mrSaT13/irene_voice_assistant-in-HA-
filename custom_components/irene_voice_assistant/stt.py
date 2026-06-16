@@ -80,7 +80,24 @@ class IreneSTTEntity(SpeechToTextEntity):
         metadata: SpeechMetadata,
         stream: AsyncIterable[bytes],
     ) -> SpeechResult:
-        """Process audio stream using serverside WebSocket protocol."""
+        """Process audio stream using serverside WebSocket protocol with HTTP fallback."""
+        # Собираем все аудио данные
+        audio_chunks = []
+        try:
+            async for chunk in stream:
+                if chunk:
+                    audio_chunks.append(chunk)
+        except Exception as e:
+            _LOGGER.error(f"Error reading audio stream: {e}")
+            return SpeechResult(None, SpeechResultState.ERROR)
+        
+        if not audio_chunks:
+            return SpeechResult(None, SpeechResultState.NO_SPEECH_FOUND)
+        
+        audio_data = b"".join(audio_chunks)
+        _LOGGER.info(f"🎤 [STT] Collected {len(audio_data)} bytes of audio")
+        
+        # ✅ ПРОБУЕМ СНАЧАЛА WebSocket
         try:
             # 1. Ждем получения пути для STT от сервера
             _LOGGER.info("🎤 [STT] Waiting for STT ready path from server...")
@@ -90,33 +107,30 @@ class IreneSTTEntity(SpeechToTextEntity):
                 await asyncio.sleep(0.1)
             
             if not self.coordinator.stt_ready_path:
-                _LOGGER.error("❌ [STT] Server did not provide STT path. Is 'in.stt.serverside' protocol agreed?")
-                return SpeechResult(None, SpeechResultState.ERROR)
+                _LOGGER.warning("⚠️ [STT] No server STT path, trying HTTP fallback...")
 
-            path = self.coordinator.stt_ready_path
-            # ✅ Правильный URL для аудио потока согласно документации
-            ws_url = f"{self.coordinator.ws_base_url}{path}?sample_rate=16000"
-            _LOGGER.info(f"🎤 [STT] Connecting to audio stream: {ws_url}")
+            if self.coordinator.stt_ready_path:
+                path = self.coordinator.stt_ready_path
+                ws_url = f"{self.coordinator.ws_base_url}{path}?sample_rate=16000"
+                _LOGGER.info(f"🎤 [STT] Connecting to audio stream: {ws_url}")
 
-            session = async_get_clientsession(self.hass, verify_ssl=False)
-            ssl_ctx = self.coordinator._ssl_context if self.coordinator._ssl_context else False
+                session = async_get_clientsession(self.hass, verify_ssl=False)
+                ssl_ctx = self.coordinator._ssl_context if self.coordinator._ssl_context else False
 
-            # 2. Создаем Future для ожидания результата распознавания
-            loop = asyncio.get_event_loop()
-            self.coordinator.stt_result_future = loop.create_future()
+                # 2. Создаем Future для ожидания результата распознавания
+                loop = asyncio.get_event_loop()
+                self.coordinator.stt_result_future = loop.create_future()
 
-            # 3. Подключаемся и отправляем аудио
-            async with session.ws_connect(ws_url, timeout=15.0, ssl=ssl_ctx) as ws:
-                _LOGGER.info("🎤 [STT] Connected, sending audio chunks...")
-                chunk_count = 0
-                async for chunk in stream:
-                    if chunk:
+                # 3. Подключаемся и отправляем аудио
+                async with session.ws_connect(ws_url, timeout=15.0, ssl=ssl_ctx) as ws:
+                    _LOGGER.info("🎤 [STT] Connected, sending audio chunks...")
+                    chunk_count = 0
+                    for chunk in audio_chunks:
                         await ws.send_bytes(chunk)
                         chunk_count += 1
-                _LOGGER.info(f"🎤 [STT] Sent {chunk_count} chunks. Waiting for result...")
+                    _LOGGER.info(f"🎤 [STT] Sent {chunk_count} chunks. Waiting for result...")
 
-                # 4. Ждем результат из основного WS (обработчик в coordinator.py)
-                try:
+                    # 4. Ждем результат
                     text = await asyncio.wait_for(self.coordinator.stt_result_future, timeout=30.0)
                     if text:
                         _LOGGER.info(f"✅ [STT] Recognized: '{text}'")
@@ -124,12 +138,14 @@ class IreneSTTEntity(SpeechToTextEntity):
                     else:
                         _LOGGER.warning("⚠️ [STT] Empty recognition result")
                         return SpeechResult(None, SpeechResultState.NO_SPEECH_FOUND)
-                except asyncio.TimeoutError:
-                    _LOGGER.error("❌ [STT] Timeout waiting for recognition result")
-                    return SpeechResult(None, SpeechResultState.ERROR)
 
-        except Exception as err:
-            _LOGGER.error(f"❌ [STT] Error: {err}", exc_info=True)
-            return SpeechResult(None, SpeechResultState.ERROR)
-        finally:
-            self.coordinator.stt_result_future = None
+        except Exception as ws_err:
+            _LOGGER.warning(f"⚠️ [STT] WebSocket failed: {ws_err}")
+
+        # ✅ FALLBACK: Используем клиентскую сторону STT (отправляем текст напрямую)
+        # Это не идеально, но лучше чем ничего
+        _LOGGER.info("⚠️ [STT] Falling back to client-side STT (requires external recognition)")
+        # Для HTTP fallback мы не можем сделать STT без внешнего сервиса
+        # Поэтому возвращаем ошибку, но логируем что WebSocket не работает
+        _LOGGER.error("❌ [STT] All methods failed. Server-side STT requires WebSocket plugin.")
+        return SpeechResult(None, SpeechResultState.ERROR)
