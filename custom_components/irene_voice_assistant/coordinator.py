@@ -217,12 +217,12 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except Exception as err:
                     _LOGGER.error(f"WS listener error: {err}")
                     break
-            finally:
-                was_connected = self.ws_connected
-                self.ws_connected = False
-                if was_connected:
-                    _LOGGER.info("WS disconnected, scheduling reconnect")
-                    self.hass.async_create_task(self._reconnect())
+        finally:
+            was_connected = self.ws_connected
+            self.ws_connected = False
+            if was_connected:
+                _LOGGER.info("WS disconnected, scheduling reconnect")
+                self.hass.async_create_task(self._reconnect())
 
     async def _reconnect(self) -> None:
         while not self.ws_connected and self.hass.is_running:
