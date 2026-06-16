@@ -99,7 +99,6 @@ class IreneTTSEntity(TextToSpeechEntity):
                 return None, None
 
             # 2. Берём текущий pending playback с playbackId
-            #    (он был установлен в _handle_ws_message при получении playback-request)
             pending = self.coordinator.get_pending_playback()
             playback_id = pending.get("playback_id") if pending else None
 
@@ -119,8 +118,6 @@ class IreneTTSEntity(TextToSpeechEntity):
                     )
 
                     # ✅ 4. ОТПРАВЛЯЕМ playback-done ПОСЛЕ СКАЧИВАНИЯ!
-                    # Это критично: без этого сервер не знает, что файл ушёл клиенту,
-                    # и может не очистить временный файл или зависнуть.
                     if playback_id:
                         await self.coordinator.send_playback_done(playback_id)
                     else:
@@ -134,14 +131,12 @@ class IreneTTSEntity(TextToSpeechEntity):
                     _LOGGER.error(
                         f"Failed to download TTS audio: HTTP {response.status}"
                     )
-                    # Всё равно отправляем done, чтобы сервер не завис
                     if playback_id:
                         await self.coordinator.send_playback_done(playback_id)
                     return None, None
 
         except Exception as err:
             _LOGGER.error(f"TTS error: {err}", exc_info=True)
-            # В случае ошибки — всё равно закрываем playback
             pending = self.coordinator.get_pending_playback()
             if pending and pending.get("playback_id"):
                 try:
