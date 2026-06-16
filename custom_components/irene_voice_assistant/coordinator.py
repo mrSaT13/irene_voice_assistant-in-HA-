@@ -19,6 +19,8 @@ from .const import (
     API_CONFIGS,
     API_NOTIFY,
     API_WEBSOCKET,
+    API_TTS_WAV,
+    API_SEND_TXT_CMD,
     DOMAIN,
     TTS_MODE_IRENE,
     TTS_MODE_MEDIA_PLAYER,
@@ -656,3 +658,66 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def clear_history(self) -> None:
         self.chat_history = []
+
+    # ✅ НОВЫЕ МЕТОДЫ: Fallback на старые HTTP endpoints (браузерная имитация)
+    async def send_text_command_http(self, text: str) -> str:
+        """Отправить команду через старый HTTP endpoint /sendTxtCmd.
+        
+        Используется как fallback когда WebSocket не работает.
+        Имитирует браузер с помощью user-agent заголовка.
+        """
+        try:
+            from urllib.parse import quote
+            url = f"{self.base_url}{API_SEND_TXT_CMD}?cmd={quote(text)}&returnFormat=saytxt"
+            _LOGGER.info(f"Sending command via HTTP: {url}")
+            
+            # ✅ Заголовки для имитации браузера
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            }
+            
+            async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    result = await response.text()
+                    _LOGGER.info(f"HTTP command result: {result[:200]}")
+                    self._add_to_history("user", text)
+                    if result and result != "NO_VA_NAME":
+                        self._add_to_history("assistant", result)
+                        return result
+                    return "Команда не распознана"
+                else:
+                    return f"Ошибка HTTP: {response.status}"
+        except Exception as err:
+            _LOGGER.error(f"HTTP command error: {err}", exc_info=True)
+            return f"Ошибка связи: {err}"
+
+    async def tts_say_http(self, text: str) -> Optional[bytes]:
+        """Получить WAV аудио через старый HTTP endpoint /ttsWav.
+        
+        Используется как fallback когда WebSocket не работает.
+        Имитирует браузер с помощью user-agent заголовка.
+        Возвращает bytes аудио или None.
+        """
+        try:
+            from urllib.parse import quote
+            url = f"{self.base_url}{API_TTS_WAV}?text={quote(text)}"
+            _LOGGER.info(f"Getting TTS via HTTP: {url}")
+            
+            # ✅ Заголовки для имитации браузера
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "audio/wav,audio/wave,audio/x-wav,*/*",
+            }
+            
+            async with self.session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    audio_bytes = await response.read()
+                    _LOGGER.info(f"HTTP TTS received: {len(audio_bytes)} bytes")
+                    return audio_bytes
+                else:
+                    _LOGGER.error(f"HTTP TTS error: {response.status}")
+                    return None
+        except Exception as err:
+            _LOGGER.error(f"HTTP TTS error: {err}", exc_info=True)
+            return None
