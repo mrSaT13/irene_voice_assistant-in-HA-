@@ -5,7 +5,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "irene_voice_assistant"
 
-DEFAULT_PORT = 8086
+DEFAULT_PORT = 8186
 DEFAULT_NAME = "Irene"
 DEFAULT_RETURN_FORMAT = "text"
 DEFAULT_REFRESH_INTERVAL = 60
@@ -35,6 +35,7 @@ PLATFORMS = [
     Platform.NOTIFY,
     Platform.SENSOR,
     Platform.TTS,
+    Platform.STT,
 ]
 
 # WebSocket protocols
