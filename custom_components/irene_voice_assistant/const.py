@@ -72,6 +72,11 @@ API_PLUGINS = "/api/discover_plugins/plugins"
 API_WEBSOCKET = "/api/face_web/ws"
 API_AUDIO_FILE = "/api/web-audio-link-output/files/{file_name}"
 
+# ✅ СТАРЫЕ HTTP endpoints (fallback для совместимости)
+API_TTS_WAV = "/ttsWav"
+API_SEND_TXT_CMD = "/sendTxtCmd"
+API_WSMIC = "/wsmic"
+
 # Panel
 PANEL_URL = "/irene_voice_assistant/panel"
 PANEL_ICON = "mdi:robot-happy"
