@@ -29,6 +29,8 @@ from .const import (
     MSG_OUT_AUDIO_LINK_PLAYBACK_PROGRESS,
     MSG_OUT_AUDIO_LINK_PLAYBACK_DONE,
     MSG_IN_STT_SERVERSIDE_READY,
+    MSG_IN_STT_SERVERSIDE_RECOGNIZED,
+    MSG_IN_STT_SERVERSIDE_PROCESSED,
     MSG_IN_MUTE_MUTE,
     MSG_IN_MUTE_UNMUTE,
     PROTOCOL_IN_TEXT_DIRECT,
@@ -115,6 +117,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # ✅ НОВОЕ: STT-серверный путь
         self._stt_serverside_path: Optional[str] = None
         self._stt_session_ready = asyncio.Event()
+        self._stt_result_future: Optional[asyncio.Future] = None
 
         self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
 
@@ -208,7 +211,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "type": MSG_NEGOTIATE_REQUEST,
             "protocols": [
                 [PROTOCOL_IN_TEXT_DIRECT, PROTOCOL_IN_TEXT_INDIRECT],
-                [PROTOCOL_OUT_AUDIO_LINK, PROTOCOL_OUT_TEXT_PLAIN],
+                [PROTOCOL_OUT_TEXT_PLAIN],
+                [PROTOCOL_OUT_AUDIO_LINK],
                 [PROTOCOL_OUT_TTS_SERVERSIDE],
                 [PROTOCOL_IN_STT_SERVERSIDE],
                 [PROTOCOL_IN_MUTE],
@@ -432,6 +436,18 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info(f"STT serverside ready, path: {path}")
             self._stt_session_ready.set()
 
+        # === STT recognized (приходит на основной WS) ===
+        elif msg_type == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
+            text = data.get("text", "")
+            _LOGGER.info(f"STT recognized on main WS: '{text}'")
+            if self._stt_result_future and not self._stt_result_future.done():
+                self._stt_result_future.set_result(text)
+
+        # === STT processed ===
+        elif msg_type == MSG_IN_STT_SERVERSIDE_PROCESSED:
+            text = data.get("text", "")
+            _LOGGER.info(f"STT processed: '{text}'")
+
         # === ЗАГЛУШЕНИЕ МИКРОФОНА ===
         elif msg_type == MSG_IN_MUTE_MUTE:
             _LOGGER.info("Muting microphone (Irene is speaking)")
@@ -483,6 +499,19 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def get_pending_playback(self) -> Optional[dict[str, str]]:
         """Получить текущее ожидающее воспроизведение (для tts.py)."""
         return self._pending_playback
+
+    async def wait_stt_result(self, timeout: float = 15.0) -> Optional[str]:
+        """Ждать результат STT (приходит на основной WS)."""
+        loop = asyncio.get_event_loop()
+        self._stt_result_future = loop.create_future()
+        try:
+            result = await asyncio.wait_for(self._stt_result_future, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            _LOGGER.warning("STT result timeout")
+            return None
+        finally:
+            self._stt_result_future = None
 
     async def send_text_command(self, text: str) -> str:
         """Send command and wait for ALL responses (with buffering)."""
