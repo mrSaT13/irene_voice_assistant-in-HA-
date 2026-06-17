@@ -461,6 +461,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             self._add_to_history("user", text)
 
+            self._tts_request = False
             self._pending_request = True
             self._response_buffer.messages.clear()
             if self._response_buffer.timer:
@@ -482,7 +483,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self.ws_connection.send_json(message)
 
             try:
-                result = await asyncio.wait_for(future, timeout=30.0 + self.buffer_timeout)
+                result = await asyncio.wait_for(future, timeout=60.0 + self.buffer_timeout)
 
                 if result["type"] == "text":
                     return result["text"]
@@ -566,7 +567,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pass
             return False
 
-    async def _get_tts_audio_url(self, message: str, timeout: float = 15.0) -> Optional[str]:
+    async def _get_tts_audio_url(self, message: str, timeout: float = 60.0) -> Optional[str]:
         """Отправить текст через WebSocket и получить URL WAV файла."""
         try:
             await self.ensure_websocket_connected()
@@ -598,6 +599,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             finally:
                 self._pending_audio_responses.pop(audio_response_id, None)
                 self._tts_request = False
+                self._response_buffer.messages.clear()
+                self._pending_request = False
 
         except Exception as err:
             _LOGGER.error(f"Error getting TTS audio URL: {err}", exc_info=True)
