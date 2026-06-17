@@ -1,8 +1,5 @@
 # custom_components/irene_voice_assistant/stt.py
-"""STT platform for Irene Voice Assistant using server-side STT.
-
-STT открывает СВОЙ собственный WebSocket и negotiate ТОЛЬКО in.stt.serverside.
-"""
+"""STT platform for Irene Voice Assistant using server-side STT."""
 
 from __future__ import annotations
 
@@ -28,15 +25,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    API_WEBSOCKET,
-    DOMAIN,
-    MSG_NEGOTIATE_AGREE,
-    MSG_NEGOTIATE_REQUEST,
-    MSG_IN_STT_SERVERSIDE_READY,
-    MSG_IN_STT_SERVERSIDE_RECOGNIZED,
-    PROTOCOL_IN_STT_SERVERSIDE,
-)
+from .const import DOMAIN
 from .coordinator import IreneCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +36,7 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up STT platform."""
     coordinator: IreneCoordinator = hass.data[DOMAIN][config_entry.entry_id]
 
     async_add_entities([
@@ -57,7 +47,15 @@ async def async_setup_entry(
 
 
 class IreneSTTEntity(SpeechToTextEntity):
-    """Irene STT entity using server-side STT."""
+    """Irene STT entity using server-side STT.
+
+    Алгоритм:
+    1. Убеждаемся, что основной WS подключен (там согласован STT-протокол).
+    2. Ждём, пока сервер пришлёт in.stt.serverside/ready с path.
+    3. Открываем ДОПОЛНИТЕЛЬНЫЙ WebSocket по этому path для отправки аудио.
+    4. Отправляем аудио-чанки + пустые байты как маркер конца.
+    5. Ждём in.stt.serverside/recognized на ОСНОВНОМ WS (не на STT WS!).
+    """
 
     def __init__(
         self,
@@ -65,6 +63,7 @@ class IreneSTTEntity(SpeechToTextEntity):
         coordinator: IreneCoordinator,
         config_entry: ConfigEntry,
     ) -> None:
+        """Initialize the STT entity."""
         self.hass = hass
         self.coordinator = coordinator
         self._attr_unique_id = f"{config_entry.entry_id}_stt"
@@ -72,26 +71,32 @@ class IreneSTTEntity(SpeechToTextEntity):
 
     @property
     def supported_languages(self) -> list[str]:
+        """Return supported languages."""
         return ["ru", "en"]
 
     @property
     def supported_formats(self) -> list[AudioFormats]:
+        """Return supported audio formats."""
         return [AudioFormats.WAV]
 
     @property
     def supported_codecs(self) -> list[AudioCodecs]:
+        """Return supported audio codecs."""
         return [AudioCodecs.PCM]
 
     @property
     def supported_bit_rates(self) -> list[AudioBitRates]:
+        """Return supported bit rates."""
         return [AudioBitRates.BITRATE_16]
 
     @property
     def supported_sample_rates(self) -> list[AudioSampleRates]:
+        """Return supported sample rates."""
         return [AudioSampleRates.SAMPLERATE_16000]
 
     @property
     def supported_channels(self) -> list[AudioChannels]:
+        """Return supported channels."""
         return [AudioChannels.CHANNEL_MONO]
 
     async def async_process_audio_stream(
@@ -99,13 +104,33 @@ class IreneSTTEntity(SpeechToTextEntity):
         metadata: SpeechMetadata,
         stream: AsyncIterable[bytes],
     ) -> SpeechResult:
+        """Process audio stream via server-side STT."""
         try:
-            _LOGGER.info("=" * 60)
-            _LOGGER.info("STARTING STT PROCESSING")
-            _LOGGER.info("=" * 60)
+            _LOGGER.info("Starting STT processing")
 
-            ws_url = f"{self.coordinator.ws_base_url}{API_WEBSOCKET}"
-            _LOGGER.info(f"STT opening WS: {ws_url}")
+            await self.coordinator.ensure_websocket_connected()
+
+            if not self.coordinator._stt_serverside_path:
+                try:
+                    await asyncio.wait_for(
+                        self.coordinator._stt_session_ready.wait(),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    _LOGGER.error(
+                        "STT server-side protocol not negotiated"
+                    )
+                    return SpeechResult(None, SpeechResultState.ERROR)
+
+            if not self.coordinator._stt_serverside_path:
+                _LOGGER.error("STT path not received from server")
+                return SpeechResult(None, SpeechResultState.ERROR)
+
+            stt_ws_url = (
+                f"{self.coordinator.ws_base_url}"
+                f"{self.coordinator._stt_serverside_path}"
+            )
+            _LOGGER.info(f"Connecting to STT WS: {stt_ws_url}")
 
             session = async_get_clientsession(self.hass, verify_ssl=False)
             ssl_ctx = (
@@ -115,97 +140,30 @@ class IreneSTTEntity(SpeechToTextEntity):
             )
 
             async with session.ws_connect(
-                ws_url, timeout=15.0, ssl=ssl_ctx,
-            ) as main_ws:
-                _LOGGER.info("STT WS connected, negotiating...")
+                stt_ws_url,
+                timeout=15.0,
+                ssl=ssl_ctx,
+            ) as stt_ws:
+                _LOGGER.info("STT WS connected, sending audio")
 
-                # Negotiate
-                await main_ws.send_json({
-                    "type": MSG_NEGOTIATE_REQUEST,
-                    "protocols": [[PROTOCOL_IN_STT_SERVERSIDE]],
-                })
+                chunk_count = 0
+                async for chunk in stream:
+                    if chunk:
+                        await stt_ws.send_bytes(chunk)
+                        chunk_count += 1
 
-                msg = await asyncio.wait_for(main_ws.receive(), timeout=10.0)
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    _LOGGER.error(f"STT negotiate failed, type={msg.type}")
+                _LOGGER.info(f"Sent {chunk_count} audio chunks")
+
+                await stt_ws.send_bytes(b"")
+
+                text = await self.coordinator.wait_stt_result(timeout=15.0)
+
+                if text is not None:
+                    _LOGGER.info(f"STT recognized: '{text}'")
+                    return SpeechResult(text, SpeechResultState.SUCCESS)
+                else:
+                    _LOGGER.error("STT timeout waiting for recognition result")
                     return SpeechResult(None, SpeechResultState.ERROR)
-
-                data = msg.json()
-                _LOGGER.info(f"STT negotiate response: {data}")
-
-                if data.get("type") != MSG_NEGOTIATE_AGREE:
-                    _LOGGER.error(f"STT negotiate rejected: {data}")
-                    return SpeechResult(None, SpeechResultState.ERROR)
-
-                # ✅ Ждём ready с увеличенным таймаутом
-                try:
-                    msg = await asyncio.wait_for(main_ws.receive(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    _LOGGER.error("STT ready timeout")
-                    return SpeechResult(None, SpeechResultState.ERROR)
-
-                if msg.type != aiohttp.WSMsgType.TEXT:
-                    _LOGGER.error(f"STT ready failed, type={msg.type}")
-                    return SpeechResult(None, SpeechResultState.ERROR)
-
-                data = msg.json()
-                _LOGGER.info(f"STT ready response: {data}")
-
-                if data.get("type") != MSG_IN_STT_SERVERSIDE_READY:
-                    _LOGGER.error(f"STT unexpected: {data}")
-                    return SpeechResult(None, SpeechResultState.ERROR)
-
-                stt_path = data.get("path", "")
-                if not stt_path:
-                    _LOGGER.error("STT ready without path!")
-                    return SpeechResult(None, SpeechResultState.ERROR)
-
-                _LOGGER.info(f"STT server ready, audio path: {stt_path}")
-
-                # Доп. WS для аудио
-                stt_ws_url = f"{self.coordinator.ws_base_url}{stt_path}"
-                _LOGGER.info(f"Connecting to STT audio WS: {stt_ws_url}")
-
-                async with session.ws_connect(
-                    stt_ws_url, timeout=15.0, ssl=ssl_ctx,
-                ) as stt_ws:
-                    # Отправляем аудио
-                    chunk_count = 0
-                    async for chunk in stream:
-                        if chunk:
-                            await stt_ws.send_bytes(chunk)
-                            chunk_count += 1
-
-                    _LOGGER.info(f"STT sent {chunk_count} audio chunks")
-
-                    # Маркер конца — пустые байты
-                    await stt_ws.send_bytes(b"")
-                    _LOGGER.info("STT sent end-of-audio marker")
-
-                    # Небольшая пауза
-                    await asyncio.sleep(0.3)
-
-                    # ✅ Ждём результат с увеличенным таймаутом
-                    try:
-                        _LOGGER.info("STT waiting for recognized message...")
-                        msg = await asyncio.wait_for(stt_ws.receive(), timeout=30.0)
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = msg.json()
-                            _LOGGER.info(f"STT got response: {data}")
-
-                            if data.get("type") == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
-                                text = data.get("text", "").strip()
-                                _LOGGER.info(f"STT recognized: '{text}'")
-                                return SpeechResult(text, SpeechResultState.SUCCESS)
-                            else:
-                                _LOGGER.error(f"STT unexpected message: {data}")
-                                return SpeechResult(None, SpeechResultState.ERROR)
-                        else:
-                            _LOGGER.error(f"STT unexpected type: {msg.type}")
-                            return SpeechResult(None, SpeechResultState.ERROR)
-                    except asyncio.TimeoutError:
-                        _LOGGER.error("STT timeout waiting for recognized")
-                        return SpeechResult(None, SpeechResultState.ERROR)
 
         except Exception as err:
             _LOGGER.error(f"STT error: {err}", exc_info=True)
