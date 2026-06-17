@@ -441,10 +441,16 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Получить текущее ожидающее воспроизведение (для tts.py)."""
         return None
 
-    async def wait_stt_result(self, timeout: float = 15.0) -> Optional[str]:
-        """Ждать результат STT (приходит на основной WS)."""
+    async def prepare_stt_result(self) -> None:
+        """Подготовить future для получения STT результата (вызвать ДО отправки аудио)."""
         loop = asyncio.get_event_loop()
         self._stt_result_future = loop.create_future()
+
+    async def wait_stt_result(self, timeout: float = 15.0) -> Optional[str]:
+        """Ждать результат STT (приходит на основной WS)."""
+        if self._stt_result_future is None:
+            _LOGGER.warning("STT result future not prepared")
+            return None
         try:
             result = await asyncio.wait_for(self._stt_result_future, timeout=timeout)
             return result
