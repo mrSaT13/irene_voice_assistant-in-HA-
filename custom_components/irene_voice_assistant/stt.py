@@ -1,5 +1,12 @@
 # custom_components/irene_voice_assistant/stt.py
-"""STT platform for Irene Voice Assistant using server-side STT."""
+"""STT platform for Irene Voice Assistant using server-side STT.
+
+⚠️ КРИТИЧНО: STT открывает СВОЙ собственный WebSocket и negotiate
+ТОЛЬКО in.stt.serverside. Это нужно потому что:
+1. STT не должен ломать основной канал (текст, TTS, mute)
+2. Ирина шлёт in.stt.serverside/ready только тому WS, который запросил STT
+3. Это надёжнее, чем пытаться расшарить состояние
+"""
 
 from __future__ import annotations
 
@@ -32,7 +39,6 @@ from .const import (
     MSG_NEGOTIATE_REQUEST,
     MSG_IN_STT_SERVERSIDE_READY,
     MSG_IN_STT_SERVERSIDE_RECOGNIZED,
-    MSG_IN_STT_SERVERSIDE_PROCESSED,
     PROTOCOL_IN_STT_SERVERSIDE,
 )
 from .coordinator import IreneCoordinator
@@ -60,13 +66,11 @@ class IreneSTTEntity(SpeechToTextEntity):
 
     Алгоритм:
     1. Открываем СВОЙ WebSocket (параллельно основному).
-    2. Negotiate in.stt.serverside.
+    2. Negotiate ТОЛЬКО in.stt.serverside.
     3. Получаем in.stt.serverside/ready с path.
     4. Открываем дополнительный WebSocket по этому path.
-    5. Отправляем аудио чанками.
-    6. Отправляем пустые байты (маркер конца).
-    7. Ждём in.stt.serverside/recognized.
-    8. Отправляем in.stt.serverside/processed с распознанным текстом.
+    5. Отправляем аудио-чанки + пустые байты (маркер конца).
+    6. Ждём in.stt.serverside/recognized.
     """
 
     def __init__(
@@ -109,11 +113,14 @@ class IreneSTTEntity(SpeechToTextEntity):
         metadata: SpeechMetadata,
         stream: AsyncIterable[bytes],
     ) -> SpeechResult:
+        """Process audio stream via server-side STT."""
         try:
             _LOGGER.info("Starting STT processing")
 
-            # Свой собственный WS (не зависим от coordinator)
+            # Свой собственный WS (не зависим от coordinator!)
             ws_url = f"{self.coordinator.ws_base_url}{API_WEBSOCKET}"
+            _LOGGER.info(f"STT opening own WS: {ws_url}")
+
             session = async_get_clientsession(self.hass, verify_ssl=False)
             ssl_ctx = (
                 self.coordinator._ssl_context
@@ -124,14 +131,18 @@ class IreneSTTEntity(SpeechToTextEntity):
             async with session.ws_connect(
                 ws_url, timeout=15.0, ssl=ssl_ctx,
             ) as main_ws:
-                # Negotiate in.stt.serverside
+                _LOGGER.info("STT WS connected, negotiating STT protocol")
+
+                # Negotiate ТОЛЬКО in.stt.serverside
                 await main_ws.send_json({
                     "type": MSG_NEGOTIATE_REQUEST,
                     "protocols": [[PROTOCOL_IN_STT_SERVERSIDE]],
                 })
 
+                # Ждём negotiate/agree
                 msg = await asyncio.wait_for(main_ws.receive(), timeout=10.0)
                 if msg.type != aiohttp.WSMsgType.TEXT:
+                    _LOGGER.error(f"STT negotiate failed, got type={msg.type}")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
                 data = msg.json()
@@ -139,28 +150,34 @@ class IreneSTTEntity(SpeechToTextEntity):
                     _LOGGER.error(f"STT negotiate rejected: {data}")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
+                _LOGGER.info(f"STT negotiate agreed: {data.get('protocols', [])}")
+
                 # Ждём in.stt.serverside/ready
                 msg = await asyncio.wait_for(main_ws.receive(), timeout=10.0)
                 if msg.type != aiohttp.WSMsgType.TEXT:
+                    _LOGGER.error(f"STT not ready, got type={msg.type}")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
                 data = msg.json()
                 if data.get("type") != MSG_IN_STT_SERVERSIDE_READY:
-                    _LOGGER.error(f"STT not ready: {data}")
+                    _LOGGER.error(f"STT unexpected message: {data}")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
                 stt_path = data.get("path", "")
                 if not stt_path:
+                    _LOGGER.error("STT ready without path!")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
                 _LOGGER.info(f"STT server ready, audio path: {stt_path}")
 
-                # Доп. WebSocket для аудио
+                # Открываем дополнительный WS по этому пути
                 stt_ws_url = f"{self.coordinator.ws_base_url}{stt_path}"
+                _LOGGER.info(f"Connecting to STT audio WS: {stt_ws_url}")
+
                 async with session.ws_connect(
                     stt_ws_url, timeout=15.0, ssl=ssl_ctx,
                 ) as stt_ws:
-                    # Отправляем аудио
+                    # Отправляем аудио чанками
                     chunk_count = 0
                     async for chunk in stream:
                         if chunk:
@@ -169,10 +186,10 @@ class IreneSTTEntity(SpeechToTextEntity):
 
                     _LOGGER.info(f"STT sent {chunk_count} chunks")
 
-                    # ✅ Маркер конца — пустые байты
+                    # Маркер конца аудио — пустые байты
                     await stt_ws.send_bytes(b"")
 
-                    # ✅ Небольшая пауза, чтобы сервер успел обработать
+                    # Небольшая пауза, чтобы сервер успел обработать
                     await asyncio.sleep(0.2)
 
                     # Ждём результат (увеличенный таймаут)
@@ -185,23 +202,12 @@ class IreneSTTEntity(SpeechToTextEntity):
                             if data.get("type") == MSG_IN_STT_SERVERSIDE_RECOGNIZED:
                                 text = data.get("text", "").strip()
                                 _LOGGER.info(f"STT recognized: '{text}'")
-
-                                # ✅ Отправляем processed по основному WS
-                                if text:
-                                    try:
-                                        await main_ws.send_json({
-                                            "type": MSG_IN_STT_SERVERSIDE_PROCESSED,
-                                            "text": text,
-                                        })
-                                    except Exception as err:
-                                        _LOGGER.debug(f"STT processed send error: {err}")
-
                                 return SpeechResult(text, SpeechResultState.SUCCESS)
                             else:
-                                _LOGGER.error(f"STT unexpected: {data}")
+                                _LOGGER.error(f"STT unexpected message: {data}")
                                 return SpeechResult(None, SpeechResultState.ERROR)
                         else:
-                            _LOGGER.error(f"STT unexpected type: {msg.type}")
+                            _LOGGER.error(f"STT unexpected message type: {msg.type}")
                             return SpeechResult(None, SpeechResultState.ERROR)
                     except asyncio.TimeoutError:
                         _LOGGER.error("STT timeout waiting for recognition result")
