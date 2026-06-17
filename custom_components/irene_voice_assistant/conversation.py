@@ -69,18 +69,11 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
         self,
         user_input: conversation.ConversationInput,
     ) -> conversation.ConversationResult:
-        """Process user input with WebSocket + HTTP fallback."""
+        """Process user input with WebSocket."""
         try:
             _LOGGER.info(f"Irene processing: {user_input.text}")
             
-            # ✅ ПРОБУЕМ СНАЧАЛА WebSocket
             response_text = await self.coordinator.send_text_command(user_input.text)
-            
-            # Проверяем таймаут или ошибку
-            if "Превышено время" in response_text or "Ошибка связи" in response_text:
-                _LOGGER.warning("WebSocket timeout, trying HTTP fallback...")
-                # ✅ FALLBACK: Пробуем старый HTTP endpoint
-                response_text = await self.coordinator.send_text_command_http(user_input.text)
             
             _LOGGER.info(f"Irene response: {response_text}")
             
