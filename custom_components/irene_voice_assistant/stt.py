@@ -36,32 +36,15 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up STT platform."""
     coordinator: IreneCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-
-    async_add_entities([
-        IreneSTTEntity(hass, coordinator, config_entry),
-    ])
-
+    async_add_entities([IreneSTTEntity(hass, coordinator, config_entry)])
     _LOGGER.info(f"Irene STT entity registered: {config_entry.title}")
 
 
 class IreneSTTEntity(SpeechToTextEntity):
-    """Irene STT entity using server-side STT.
+    """Irene STT entity using server-side STT via WebSocket."""
 
-    1. Основной WS подключен, STT протокол согласован.
-    2. Сервер отправляет in.stt.serverside/ready с path.
-    3. Открываем ДОПОЛНИТЕЛЬНЫЙ WS для отправки аудио.
-    4. Отправляем аудио + пустой байт как маркер конца.
-    5. Ждём in.stt.serverside/recognized на ОСНОВНОМ WS.
-    """
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        coordinator: IreneCoordinator,
-        config_entry: ConfigEntry,
-    ) -> None:
+    def __init__(self, hass: HomeAssistant, coordinator: IreneCoordinator, config_entry: ConfigEntry) -> None:
         self.hass = hass
         self.coordinator = coordinator
         self._attr_unique_id = f"{config_entry.entry_id}_stt"
@@ -96,7 +79,6 @@ class IreneSTTEntity(SpeechToTextEntity):
         metadata: SpeechMetadata,
         stream: AsyncIterable[bytes],
     ) -> SpeechResult:
-        """Process audio stream via server-side STT."""
         try:
             _LOGGER.info("Starting STT processing")
 
@@ -113,31 +95,23 @@ class IreneSTTEntity(SpeechToTextEntity):
                         timeout=5.0,
                     )
                 except asyncio.TimeoutError:
-                    _LOGGER.error("STT server-side not ready (no in.stt.serverside/ready)")
+                    _LOGGER.error("STT server-side not ready")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
             if not self.coordinator._stt_serverside_path:
-                _LOGGER.error("STT path not received from server")
+                _LOGGER.error("STT path not received")
                 return SpeechResult(None, SpeechResultState.ERROR)
 
-            stt_ws_url = (
-                f"{self.coordinator.ws_base_url}"
-                f"{self.coordinator._stt_serverside_path}"
-            )
+            stt_ws_url = f"{self.coordinator.ws_base_url}{self.coordinator._stt_serverside_path}"
             _LOGGER.info(f"Connecting to STT WS: {stt_ws_url}")
 
             session = async_get_clientsession(self.hass, verify_ssl=False)
-            ssl_ctx = (
-                self.coordinator._ssl_context
-                if self.coordinator._ssl_context
-                else False
-            )
+            ssl_ctx = self.coordinator._ssl_context if self.coordinator._ssl_context else False
 
-            async with session.ws_connect(
-                stt_ws_url,
-                timeout=15.0,
-                ssl=ssl_ctx,
-            ) as stt_ws:
+            # Подготавливаем future ДО отправки аудио (чтобы не пропустить ответ)
+            await self.coordinator.prepare_stt_result()
+
+            async with session.ws_connect(stt_ws_url, timeout=15.0, ssl=ssl_ctx) as stt_ws:
                 _LOGGER.info("STT WS connected, sending audio")
 
                 chunk_count = 0
@@ -147,10 +121,9 @@ class IreneSTTEntity(SpeechToTextEntity):
                         chunk_count += 1
 
                 _LOGGER.info(f"Sent {chunk_count} audio chunks")
-
                 await stt_ws.send_bytes(b"")
 
-                text = await self.coordinator.wait_stt_result(timeout=15.0)
+                text = await self.coordinator.wait_stt_result(timeout=20.0)
 
                 if text is not None and len(text.strip()) > 0:
                     _LOGGER.info(f"STT recognized: '{text}'")
