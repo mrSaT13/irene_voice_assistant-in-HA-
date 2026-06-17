@@ -1,10 +1,10 @@
 # custom_components/irene_voice_assistant/coordinator.py
 """Data coordinator for Irene Voice Assistant with message buffering, HA bridge and TTS to media_player.
 
-Изменения в этой версии:
-- send_text_command_http: НЕ пытаемся /sendTxtCmd (он не поддерживает POST у Ирины)
-- send_text_command_http: переиспользуем WebSocket с другим таймаутом
-- send_text_command: уменьшен таймаут до 15с (не 30с), логируем прогресс
+КРИТИЧНОЕ ИСПРАВЛЕНИЕ:
+send_text_command теперь ждёт ЛЮБОЙ ответ (текст ИЛИ аудио).
+Раньше он ждал только out.text-plain/text, а Ирина может ответить
+только через out.audio.link (потому что мы запросили out.tts.serverside).
 """
 from __future__ import annotations
 
@@ -104,15 +104,12 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.return_format = return_format
         self.buffer_timeout = buffer_timeout
 
-        # ✅ TTS на колонку
         self.media_player_entity = media_player_entity
         self.tts_mode = tts_mode
         self._pending_audio_responses: dict[str, asyncio.Future] = {}
 
-        # ✅ Флаг TTS запросов
         self._tts_request = False
 
-        # ✅ Текущее воспроизведение аудио
         self._pending_playback: Optional[dict[str, str]] = None
         self._playback_progress_task: Optional[asyncio.Task] = None
 
@@ -126,7 +123,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.ws_lock = asyncio.Lock()
         self.agreed_protocols: list[str] = []
 
-        # Буфер для накопления ответов
         self._response_buffer: BufferedResponse = BufferedResponse()
         self._pending_request: bool = False
         self._response_counter = 0
@@ -275,32 +271,44 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._current_reconnect_delay * 2, self._max_reconnect_delay
                 )
 
-    def _flush_response_buffer(self) -> None:
-        """Сбрасывает буфер и резолвит future со всеми накопленными сообщениями."""
+    # ✅ НОВОЕ: метод для resolve text future из _handle_ws_message
+    def _resolve_text_buffer(self) -> None:
+        """Резолвит text future если есть pending сообщения с текстом."""
         if self._response_buffer.future and not self._response_buffer.future.done():
             if self._response_buffer.messages:
-                if len(self._response_buffer.messages) > 1:
-                    texts = [m.get("text", "") for m in self._response_buffer.messages if m.get("text")]
+                # Берём весь накопленный текст
+                texts = []
+                for m in self._response_buffer.messages:
+                    if m.get("text"):
+                        texts.append(m["text"])
+                if texts:
                     combined = "\n\n".join(texts)
                     self._response_buffer.future.set_result({
                         "type": "text",
                         "text": combined,
                         "parts": self._response_buffer.messages,
                     })
-                else:
-                    msg = self._response_buffer.messages[0]
+                    return
+            # Если только аудио без текста — резолвим с пометкой
+            if self._response_buffer.messages:
+                audio_msgs = [m for m in self._response_buffer.messages if m.get("type") == "audio"]
+                if audio_msgs:
                     self._response_buffer.future.set_result({
-                        "type": "text",
-                        "text": msg.get("text", ""),
-                        "parts": self._response_buffer.messages,
+                        "type": "audio",
+                        "text": audio_msgs[0].get("alt_text") or "[Аудио ответ]",
+                        "alt_text": audio_msgs[0].get("alt_text", ""),
+                        "url": audio_msgs[0].get("url", ""),
                     })
-            else:
-                self._response_buffer.future.set_result({
-                    "type": "text",
-                    "text": "",
-                    "parts": [],
-                })
+                    return
+            self._response_buffer.future.set_result({
+                "type": "text",
+                "text": "",
+                "parts": [],
+            })
 
+    def _flush_response_buffer(self) -> None:
+        """Сбрасывает буфер и резолвит future со всеми накопленными сообщениями."""
+        self._resolve_text_buffer()
         self._response_buffer.messages.clear()
         self._response_buffer.timer = None
         self._pending_request = False
@@ -330,6 +338,10 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             if self._tts_request:
                 _LOGGER.debug("Ignoring text for TTS request")
+                # Но если есть pending text request — резолвим его!
+                if self._pending_request and self._response_buffer.future and not self._response_buffer.future.done():
+                    # Даже если TTS, текст мог быть частью ответа
+                    pass
                 return
 
             self._response_buffer.messages.append({
@@ -369,6 +381,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "type": "text",
                 })
             else:
+                # ⚠️ КРИТИЧНО: НЕ запускаем буфер, а сразу резолвим, если есть текст
+                # ИЛИ продолжаем ждать аудио
                 self._start_buffer_timer()
 
         # === АУДИО ===
@@ -376,7 +390,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             url = data.get("url", "")
             playback_id = data.get("playbackId", "")
             alt_text = data.get("altText", "")
-            _LOGGER.info(f"Audio request: {url}, playbackId={playback_id}")
+            _LOGGER.info(f"Audio request: {url}, playbackId={playback_id}, altText={alt_text}")
 
             self._pending_playback = {
                 "url": url,
@@ -405,6 +419,36 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "alt_text": alt_text,
                 "playback_id": playback_id,
             })
+
+            # ⚠️ КРИТИЧНО: Если есть pending text request, добавляем аудио в буфер
+            # и резолвим future с alt_text (текст мог прийти/не прийти)
+            if self._pending_request:
+                self._response_buffer.messages.append({
+                    "type": "audio",
+                    "url": url,
+                    "alt_text": alt_text,
+                    "playback_id": playback_id,
+                    "timestamp": dt_util.utcnow().isoformat(),
+                })
+                # Если текст НЕ пришёл (Ирина ответила только аудио),
+                # резолвим future сейчас, не дожидаясь текста
+                has_text = any(
+                    m.get("type") == "text" and m.get("text", "").strip()
+                    for m in self._response_buffer.messages
+                )
+                if not has_text:
+                    _LOGGER.info(
+                        f"No text from Irene, resolving with audio alt_text: {alt_text[:50]}"
+                    )
+                    if self._response_buffer.future and not self._response_buffer.future.done():
+                        self._response_buffer.future.set_result({
+                            "type": "audio",
+                            "text": alt_text or "[Аудио ответ]",
+                            "alt_text": alt_text,
+                            "url": url,
+                        })
+                        # Очищаем буфер после резолва
+                        # Не очищаем, чтобы можно было довинуть текст
 
             if not self._pending_request:
                 async_create_notification(
@@ -466,19 +510,24 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self._pending_playback
 
     async def send_text_command(self, text: str) -> str:
-        """Send command and wait for ALL responses (with buffering)."""
+        """Send command and wait for response (text OR audio altText).
+
+        КРИТИЧНО: Ирина может ответить только через out.audio.link (без текста),
+        если мы запросили out.tts.serverside. В этом случае мы используем
+        altText из playback-request.
+        """
         try:
             await self.ensure_websocket_connected()
 
-            # ⚠️ КРИТИЧНО: если сейчас идёт TTS-запрос, подождём его завершения
+            # Подождём завершения TTS, если он идёт
             if self._tts_request or self._pending_playback:
                 _LOGGER.warning("TTS request in progress, waiting...")
-                for _ in range(20):  # максимум 10с ожидания
+                for _ in range(20):
                     await asyncio.sleep(0.5)
                     if not self._tts_request and not self._pending_playback:
                         break
                 else:
-                    _LOGGER.error("TTS request stuck, resetting state")
+                    _LOGGER.error("TTS stuck, resetting state")
                     self._tts_request = False
                     self._pending_playback = None
 
@@ -494,7 +543,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._response_buffer.future = future
 
             message = {"type": MSG_IN_TEXT_DIRECT_TEXT, "text": text}
-            _LOGGER.info(f"Sending WS text command: {message}")
+            _LOGGER.info(f"Sending WS text command: {text[:80]}")
 
             try:
                 await self.ws_connection.send_json(message)
@@ -504,22 +553,27 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self.ensure_websocket_connected()
                 await self.ws_connection.send_json(message)
 
-            # ✅ УМЕНЬШЕН таймаут с 30с до 20с + логирование
             try:
+                # ✅ Ждём 20с (Ирина может отвечать долго)
                 result = await asyncio.wait_for(future, timeout=20.0)
-                _LOGGER.info(f"Got WS response: type={result.get('type')}")
+                _LOGGER.info(f"Got WS response: type={result.get('type')}, text={result.get('text', '')[:50]}")
 
                 if result["type"] == "text":
                     return result["text"]
                 elif result["type"] == "audio":
-                    return result.get("alt_text") or "[Аудио ответ]"
+                    return result.get("text") or result.get("alt_text") or "[Аудио ответ]"
                 return str(result)
 
             except asyncio.TimeoutError:
                 _LOGGER.warning(f"WS timeout for text command: {text[:50]}")
                 if self._response_buffer.messages:
-                    texts = [m.get("text", "") for m in self._response_buffer.messages]
-                    return "\n\n".join(texts)
+                    # Берём то, что есть
+                    for m in self._response_buffer.messages:
+                        if m.get("type") == "text" and m.get("text"):
+                            return m["text"]
+                    for m in self._response_buffer.messages:
+                        if m.get("type") == "audio":
+                            return m.get("alt_text") or "[Аудио ответ]"
                 return "Превышено время ожидания ответа от Ирины"
             finally:
                 self._response_buffer.future = None
@@ -531,18 +585,15 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ws_connected = False
             return f"Ошибка связи с Ириной: {err}"
 
-    # ✅ ИСПРАВЛЕННЫЙ HTTP fallback: НЕ пытаемся /sendTxtCmd
+    # ✅ УПРОЩЁННЫЙ HTTP fallback: НЕ пытаемся /sendTxtCmd вообще
     async def send_text_command_http(self, text: str) -> str:
         """HTTP fallback. Ирина не предоставляет HTTP API для команд.
 
-        Стратегия:
-        1. Проверяем, что Ирина доступна
-        2. Переиспользуем WebSocket с retry
-        3. Возвращаем понятное сообщение
+        Стратегия: переподключаем WS и пробуем через WS.
         """
-        _LOGGER.info("HTTP fallback: trying WS reconnect first")
+        _LOGGER.info("HTTP fallback: trying WS reconnect")
 
-        # Проверяем доступность
+        # Проверяем доступность Ирины
         try:
             async with self.session.get(
                 f"{self.base_url}/api/config/configs",
@@ -553,15 +604,13 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             return f"Ирина недоступна: {err}"
 
-        # Ирина не предоставляет HTTP API для команд,
-        # поэтому переподключаем WebSocket и пробуем снова
+        # Переподключаем WS
         _LOGGER.info("Reconnecting WebSocket for retry")
         self.ws_connected = False
         self._pending_audio_responses.clear()
         self._tts_request = False
         self._pending_playback = None
 
-        # Сбрасываем буфер
         if self._response_buffer.timer:
             self._response_buffer.timer.cancel()
         self._response_buffer.messages.clear()
@@ -571,7 +620,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             await self.ensure_websocket_connected()
-            # Повторно отправляем команду через WS
             return await self.send_text_command(text)
         except Exception as err:
             _LOGGER.error(f"WS reconnect failed: {err}", exc_info=True)
