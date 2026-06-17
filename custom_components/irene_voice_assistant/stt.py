@@ -1,9 +1,8 @@
 # custom_components/irene_voice_assistant/stt.py
-"""STT platform for Irene Voice Assistant using server-side STT."""
+"""STT platform for Irene Voice Assistant using /api/willow HTTP endpoint."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, AsyncIterable
 
@@ -47,15 +46,7 @@ async def async_setup_entry(
 
 
 class IreneSTTEntity(SpeechToTextEntity):
-    """Irene STT entity using server-side STT.
-
-    Алгоритм:
-    1. Убеждаемся, что основной WS подключен (там согласован STT-протокол).
-    2. Ждём, пока сервер пришлёт in.stt.serverside/ready с path.
-    3. Открываем ДОПОЛНИТЕЛЬНЫЙ WebSocket по этому path для отправки аудио.
-    4. Отправляем аудио-чанки + пустые байты как маркер конца.
-    5. Ждём in.stt.serverside/recognized на ОСНОВНОМ WS (не на STT WS!).
-    """
+    """Irene STT entity using /api/willow HTTP endpoint."""
 
     def __init__(
         self,
@@ -71,32 +62,26 @@ class IreneSTTEntity(SpeechToTextEntity):
 
     @property
     def supported_languages(self) -> list[str]:
-        """Return supported languages."""
         return ["ru", "en"]
 
     @property
     def supported_formats(self) -> list[AudioFormats]:
-        """Return supported audio formats."""
         return [AudioFormats.WAV]
 
     @property
     def supported_codecs(self) -> list[AudioCodecs]:
-        """Return supported audio codecs."""
         return [AudioCodecs.PCM]
 
     @property
     def supported_bit_rates(self) -> list[AudioBitRates]:
-        """Return supported bit rates."""
         return [AudioBitRates.BITRATE_16]
 
     @property
     def supported_sample_rates(self) -> list[AudioSampleRates]:
-        """Return supported sample rates."""
         return [AudioSampleRates.SAMPLERATE_16000]
 
     @property
     def supported_channels(self) -> list[AudioChannels]:
-        """Return supported channels."""
         return [AudioChannels.CHANNEL_MONO]
 
     async def async_process_audio_stream(
@@ -104,65 +89,45 @@ class IreneSTTEntity(SpeechToTextEntity):
         metadata: SpeechMetadata,
         stream: AsyncIterable[bytes],
     ) -> SpeechResult:
-        """Process audio stream via server-side STT."""
+        """Process audio stream via /api/willow HTTP endpoint."""
         try:
-            _LOGGER.info("Starting STT processing")
+            _LOGGER.info("Starting STT processing via /api/willow")
 
-            await self.coordinator.ensure_websocket_connected()
+            audio_data = b""
+            async for chunk in stream:
+                if chunk:
+                    audio_data += chunk
 
-            if not self.coordinator._stt_serverside_path:
-                try:
-                    await asyncio.wait_for(
-                        self.coordinator._stt_session_ready.wait(),
-                        timeout=5.0,
-                    )
-                except asyncio.TimeoutError:
-                    _LOGGER.error(
-                        "STT server-side protocol not negotiated"
-                    )
-                    return SpeechResult(None, SpeechResultState.ERROR)
+            _LOGGER.info(f"Collected {len(audio_data)} bytes of audio")
 
-            if not self.coordinator._stt_serverside_path:
-                _LOGGER.error("STT path not received from server")
+            if len(audio_data) == 0:
+                _LOGGER.warning("No audio data received")
                 return SpeechResult(None, SpeechResultState.ERROR)
 
-            stt_ws_url = (
-                f"{self.coordinator.ws_base_url}"
-                f"{self.coordinator._stt_serverside_path}"
-            )
-            _LOGGER.info(f"Connecting to STT WS: {stt_ws_url}")
+            url = f"{self.coordinator.base_url}/api/willow"
+            headers = {
+                "x-audio-sample-rate": "16000",
+                "x-audio-channel": "1",
+                "x-audio-bits": "16",
+                "x-audio-codec": "pcm",
+                "Content-Type": "multipart/form-data",
+            }
 
             session = async_get_clientsession(self.hass, verify_ssl=False)
-            ssl_ctx = (
-                self.coordinator._ssl_context
-                if self.coordinator._ssl_context
-                else False
-            )
-
-            async with session.ws_connect(
-                stt_ws_url,
-                timeout=15.0,
-                ssl=ssl_ctx,
-            ) as stt_ws:
-                _LOGGER.info("STT WS connected, sending audio")
-
-                chunk_count = 0
-                async for chunk in stream:
-                    if chunk:
-                        await stt_ws.send_bytes(chunk)
-                        chunk_count += 1
-
-                _LOGGER.info(f"Sent {chunk_count} audio chunks")
-
-                await stt_ws.send_bytes(b"")
-
-                text = await self.coordinator.wait_stt_result(timeout=15.0)
-
-                if text is not None:
+            async with session.post(
+                url,
+                headers=headers,
+                data=audio_data,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as response:
+                if response.status == 200:
+                    text = (await response.text()).strip().strip('"')
                     _LOGGER.info(f"STT recognized: '{text}'")
-                    return SpeechResult(text, SpeechResultState.SUCCESS)
+                    if len(text) > 0:
+                        return SpeechResult(text, SpeechResultState.SUCCESS)
+                    return SpeechResult(None, SpeechResultState.ERROR)
                 else:
-                    _LOGGER.error("STT timeout waiting for recognition result")
+                    _LOGGER.error(f"STT error: HTTP {response.status}")
                     return SpeechResult(None, SpeechResultState.ERROR)
 
         except Exception as err:
