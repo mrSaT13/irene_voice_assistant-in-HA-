@@ -1,11 +1,10 @@
 # custom_components/irene_voice_assistant/coordinator.py
 """Data coordinator for Irene Voice Assistant with message buffering, HA bridge and TTS to media_player.
 
-⚠️ ВАЖНО: TTS-логика (_get_tts_audio_url, send_playback_done, tts_to_media_player) 
-работает и не должна быть изменена! Изменения только в:
-- добавлен send_text_command_http (fallback для conversation)
-- добавлен send_text_command_via_text_protocol (новый метод)
-- в _negotiate_protocols убран in.stt.serverside (STT сам negotiate)
+Изменения в этой версии:
+- send_text_command_http: НЕ пытаемся /sendTxtCmd (он не поддерживает POST у Ирины)
+- send_text_command_http: переиспользуем WebSocket с другим таймаутом
+- send_text_command: уменьшен таймаут до 15с (не 30с), логируем прогресс
 """
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ from .const import (
     API_CONFIGS,
     API_NOTIFY,
     API_WEBSOCKET,
-    API_SEND_TXT_CMD,
     MSG_NEGOTIATE_AGREE,
     MSG_NEGOTIATE_REQUEST,
     MSG_IN_TEXT_DIRECT_TEXT,
@@ -111,14 +109,12 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.tts_mode = tts_mode
         self._pending_audio_responses: dict[str, asyncio.Future] = {}
 
-        # ✅ Флаг TTS запросов (чтобы игнорировать текст в буфере)
+        # ✅ Флаг TTS запросов
         self._tts_request = False
 
         # ✅ Текущее воспроизведение аудио
         self._pending_playback: Optional[dict[str, str]] = None
         self._playback_progress_task: Optional[asyncio.Task] = None
-
-        # ❌ УБРАНО: STT-логика из coordinator (STT платформа сама negotiate)
 
         self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
 
@@ -146,7 +142,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._ssl_context.check_hostname = False
             self._ssl_context.verify_mode = ssl.CERT_NONE
 
-        # HA Bridge для выполнения команд
         self.ha_bridge = HaBridge(hass)
 
         _LOGGER.info(
@@ -208,19 +203,14 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _negotiate_protocols(self) -> None:
         """Согласование протоколов.
 
-        ВАЖНО: in.stt.serverside НЕ включаем сюда — STT-платформа
-        открывает свой WS и сама negotiate этот протокол.
+        ВАЖНО: in.stt.serverside НЕ включаем — STT-платформа сама negotiate.
         """
         negotiate_msg = {
             "type": MSG_NEGOTIATE_REQUEST,
             "protocols": [
-                # 1. Вход: команды (текст)
                 [PROTOCOL_IN_TEXT_DIRECT, PROTOCOL_IN_TEXT_INDIRECT],
-                # 2. Выход: сначала протокол передачи аудио, потом текст
                 [PROTOCOL_OUT_AUDIO_LINK, PROTOCOL_OUT_TEXT_PLAIN],
-                # 3. TTS-серверный ПОСЛЕ out.audio.link (по документации!)
                 [PROTOCOL_OUT_TTS_SERVERSIDE],
-                # 4. Заглушение микрофона
                 [PROTOCOL_IN_MUTE],
             ]
         }
@@ -408,8 +398,6 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._send_playback_progress(playback_id)
             )
 
-            # НЕ отправляем done здесь — это сделает tts.py / tts_to_media_player
-
             self._add_to_history("assistant", f"[Аудио] {alt_text or url}")
             self.hass.bus.async_fire(f"{DOMAIN}_message", {
                 "type": "audio",
@@ -482,6 +470,18 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             await self.ensure_websocket_connected()
 
+            # ⚠️ КРИТИЧНО: если сейчас идёт TTS-запрос, подождём его завершения
+            if self._tts_request or self._pending_playback:
+                _LOGGER.warning("TTS request in progress, waiting...")
+                for _ in range(20):  # максимум 10с ожидания
+                    await asyncio.sleep(0.5)
+                    if not self._tts_request and not self._pending_playback:
+                        break
+                else:
+                    _LOGGER.error("TTS request stuck, resetting state")
+                    self._tts_request = False
+                    self._pending_playback = None
+
             self._add_to_history("user", text)
 
             self._pending_request = True
@@ -494,7 +494,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._response_buffer.future = future
 
             message = {"type": MSG_IN_TEXT_DIRECT_TEXT, "text": text}
-            _LOGGER.debug(f"Sending: {message}")
+            _LOGGER.info(f"Sending WS text command: {message}")
 
             try:
                 await self.ws_connection.send_json(message)
@@ -504,8 +504,10 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self.ensure_websocket_connected()
                 await self.ws_connection.send_json(message)
 
+            # ✅ УМЕНЬШЕН таймаут с 30с до 20с + логирование
             try:
-                result = await asyncio.wait_for(future, timeout=30.0 + self.buffer_timeout)
+                result = await asyncio.wait_for(future, timeout=20.0)
+                _LOGGER.info(f"Got WS response: type={result.get('type')}")
 
                 if result["type"] == "text":
                     return result["text"]
@@ -514,6 +516,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return str(result)
 
             except asyncio.TimeoutError:
+                _LOGGER.warning(f"WS timeout for text command: {text[:50]}")
                 if self._response_buffer.messages:
                     texts = [m.get("text", "") for m in self._response_buffer.messages]
                     return "\n\n".join(texts)
@@ -528,14 +531,18 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ws_connected = False
             return f"Ошибка связи с Ириной: {err}"
 
-    # ✅ НОВОЕ: HTTP fallback для отправки команды (для conversation.py)
+    # ✅ ИСПРАВЛЕННЫЙ HTTP fallback: НЕ пытаемся /sendTxtCmd
     async def send_text_command_http(self, text: str) -> str:
-        """HTTP fallback.
+        """HTTP fallback. Ирина не предоставляет HTTP API для команд.
 
-        Ирина не предоставляет HTTP endpoint для команд напрямую.
-        Эта функция пробует несколько вариантов и возвращает понятное сообщение.
+        Стратегия:
+        1. Проверяем, что Ирина доступна
+        2. Переиспользуем WebSocket с retry
+        3. Возвращаем понятное сообщение
         """
-        # Сначала проверим, что Ирина вообще отвечает
+        _LOGGER.info("HTTP fallback: trying WS reconnect first")
+
+        # Проверяем доступность
         try:
             async with self.session.get(
                 f"{self.base_url}/api/config/configs",
@@ -546,43 +553,28 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             return f"Ирина недоступна: {err}"
 
-        # Пробуем /sendTxtCmd (POST)
-        try:
-            url = f"{self.base_url}/sendTxtCmd"
-            async with self.session.post(
-                url,
-                json={"text": text, "cmd": text},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                if r.status == 200:
-                    body = await r.text()
-                    return body or "OK"
-                _LOGGER.debug(f"POST /sendTxtCmd: {r.status}")
-        except Exception as err:
-            _LOGGER.debug(f"POST /sendTxtCmd failed: {err}")
-
-        # Пробуем /sendTxtCmd (GET)
-        try:
-            url = f"{self.base_url}/sendTxtCmd"
-            async with self.session.get(
-                url,
-                params={"text": text},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                if r.status == 200:
-                    body = await r.text()
-                    return body or "OK"
-        except Exception as err:
-            _LOGGER.debug(f"GET /sendTxtCmd failed: {err}")
-
-        # Если ничего не сработало — попробуем переподключить WS
-        _LOGGER.warning("HTTP fallback failed, reconnecting WebSocket")
+        # Ирина не предоставляет HTTP API для команд,
+        # поэтому переподключаем WebSocket и пробуем снова
+        _LOGGER.info("Reconnecting WebSocket for retry")
         self.ws_connected = False
+        self._pending_audio_responses.clear()
+        self._tts_request = False
+        self._pending_playback = None
+
+        # Сбрасываем буфер
+        if self._response_buffer.timer:
+            self._response_buffer.timer.cancel()
+        self._response_buffer.messages.clear()
+        if self._response_buffer.future and not self._response_buffer.future.done():
+            self._response_buffer.future.cancel()
+        self._pending_request = False
+
         try:
             await self.ensure_websocket_connected()
-            # Попробуем ещё раз через WS
+            # Повторно отправляем команду через WS
             return await self.send_text_command(text)
         except Exception as err:
+            _LOGGER.error(f"WS reconnect failed: {err}", exc_info=True)
             return f"Не удалось связаться с Ириной: {err}"
 
     async def tts_say(self, text: str) -> None:
@@ -606,11 +598,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         media_player_entity: str | None = None,
         timeout: float = 15.0,
     ) -> bool:
-        """Озвучить текст на колонке через TTS Ирины.
-
-        Использует серверный TTS Ирины (её голос!) и отправляет WAV на колонку
-        через media_player.play_media.
-        """
+        """Озвучить текст на колонке через TTS Ирины."""
         media_player = media_player_entity or self.media_player_entity
 
         if not media_player:
@@ -663,12 +651,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
     async def _get_tts_audio_url(self, message: str, timeout: float = 15.0) -> Optional[str]:
-        """Отправить текст через WebSocket и получить URL WAV файла.
-
-        Returns:
-            URL WAV файла (например, /api/web-audio-link-output/files/xxx.wav)
-            или None если не удалось получить.
-        """
+        """Отправить текст через WebSocket и получить URL WAV файла."""
         try:
             await self.ensure_websocket_connected()
 
