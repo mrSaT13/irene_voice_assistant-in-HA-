@@ -18,6 +18,9 @@ CONF_WS_HEARTBEAT = "ws_heartbeat"
 CONF_MEDIA_PLAYER = "media_player_entity"
 CONF_TTS_MODE = "tts_mode"
 
+# ✅ ДОБАВЛЕНО: константа для чекбокса уведомлений
+CONF_ENABLE_NOTIFICATIONS = "enable_notifications"
+
 # Режимы озвучки
 TTS_MODE_IRENE = "irene"  # Только через Ирину (её серверный TTS)
 TTS_MODE_MEDIA_PLAYER = "media_player"  # Только через колонку (голос Ирины!)
