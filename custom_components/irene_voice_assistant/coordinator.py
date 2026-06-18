@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import ssl
 import time
+import wave
 from datetime import timedelta
 from typing import Any, Optional
 
@@ -48,6 +50,21 @@ from .const import (
 from .ha_bridge import HaBridge
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def estimate_wav_duration(audio_bytes: bytes) -> float | None:
+    """Estimate WAV playback duration in seconds."""
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+            frame_rate = wav_file.getframerate()
+            if frame_rate <= 0:
+                return None
+            return wav_file.getnframes() / float(frame_rate)
+    except Exception:
+        if len(audio_bytes) > 44:
+            # Fallback for PCM WAV without a readable header.
+            return max((len(audio_bytes) - 44) / 32000.0, 0.0)
+        return None
 
 MESSAGE_BUFFER_TIMEOUT = 2.5
 
@@ -107,6 +124,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.tts_mode = tts_mode
         self.enable_notifications = enable_notifications  # ✅ НОВОЕ
         self._pending_audio_responses: dict[str, asyncio.Future] = {}
+        self._current_playback: Optional[dict[str, str]] = None
 
         self._tts_request = False
 
@@ -387,6 +405,14 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         _LOGGER.info(f"Resolved audio URL for tts.py: {url}")
                         break
 
+            self._current_playback = None
+            if playback_id:
+                self._current_playback = {
+                    "playback_id": playback_id,
+                    "url": url,
+                    "alt_text": alt_text,
+                }
+
             self._add_to_history("assistant", f"[Аудио] {alt_text or url}")
             self.hass.bus.async_fire(f"{DOMAIN}_message", {
                 "type": "audio",
@@ -482,10 +508,20 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             finally:
                 task.cancel()
         self._active_playbacks.clear()
+        self._current_playback = None
+
+    def _clear_playback_tracking(self, playback_id: str) -> None:
+        """Stop progress tracking for one playback."""
+        task = self._active_playbacks.pop(playback_id, None)
+        if task and not task.done():
+            task.cancel()
+        if self._current_playback and self._current_playback.get("playback_id") == playback_id:
+            self._current_playback = None
 
     async def send_playback_done(self, playback_id: str) -> None:
         """Публичный метод: вызывайте когда файл реально скачан/воспроизведён."""
         if not self.ws_connection or self.ws_connection.closed:
+            self._clear_playback_tracking(playback_id)
             return
         try:
             await self.ws_connection.send_json({
@@ -495,10 +531,53 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info(f"Playback done sent: {playback_id}")
         except Exception as err:
             _LOGGER.error(f"Playback done error: {err}")
+        finally:
+            self._clear_playback_tracking(playback_id)
 
     def get_pending_playback(self) -> Optional[dict[str, str]]:
         """Получить текущее ожидающее воспроизведение (для tts.py)."""
-        return None
+        if not self._current_playback:
+            return None
+        return dict(self._current_playback)
+
+    async def schedule_playback_done_after_bytes(
+        self,
+        playback_id: str,
+        audio_bytes: bytes,
+        buffer_seconds: float = 0.25,
+    ) -> None:
+        """Send playback-done after the estimated WAV duration."""
+        duration = estimate_wav_duration(audio_bytes)
+        if duration is None:
+            _LOGGER.warning(f"Cannot estimate WAV duration for playback {playback_id}")
+            return
+
+        await asyncio.sleep(max(0.0, duration + buffer_seconds))
+        pending = self.get_pending_playback()
+        if not pending or pending.get("playback_id") != playback_id:
+            return
+        await self.send_playback_done(playback_id)
+
+    async def schedule_playback_done_after_url(
+        self,
+        playback_id: str,
+        audio_url: str,
+        buffer_seconds: float = 0.25,
+    ) -> None:
+        """Fetch a WAV URL, estimate duration and finalize playback."""
+        try:
+            async with self.session.get(audio_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status != 200:
+                    _LOGGER.warning(
+                        f"Cannot fetch audio for playback {playback_id}: HTTP {response.status}"
+                    )
+                    return
+                audio_bytes = await response.read()
+        except Exception as err:
+            _LOGGER.warning(f"Cannot fetch audio for playback {playback_id}: {err}")
+            return
+
+        await self.schedule_playback_done_after_bytes(playback_id, audio_bytes, buffer_seconds)
 
     async def prepare_stt_result(self) -> None:
         """Подготовить future для получения STT результата (вызвать ДО отправки аудио)."""
@@ -619,6 +698,15 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 },
                 blocking=False,
             )
+
+            pending = self.get_pending_playback()
+            if pending and pending.get("playback_id"):
+                self.hass.async_create_task(
+                    self.schedule_playback_done_after_url(
+                        pending["playback_id"],
+                        full_url,
+                    )
+                )
 
             _LOGGER.info(f"TTS sent to media_player: {media_player}")
             self._add_to_history("assistant", f"[TTS→{media_player}] {message}")
