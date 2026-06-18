@@ -19,6 +19,7 @@ from .const import (
     CONF_REFRESH_INTERVAL,
     CONF_RETURN_FORMAT,
     CONF_TTS_MODE,
+    CONF_ENABLE_NOTIFICATIONS,  # ✅ НОВОЕ
     DEFAULT_NAME,
     DEFAULT_PORT,
     DEFAULT_REFRESH_INTERVAL,
@@ -98,6 +99,7 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             CONF_REFRESH_INTERVAL: DEFAULT_REFRESH_INTERVAL,
                             CONF_TTS_MODE: TTS_MODE_BOTH,
                             CONF_MEDIA_PLAYER: "",
+                            CONF_ENABLE_NOTIFICATIONS: True,  # ✅ НОВОЕ
                         },
                     )
                 else:
@@ -129,11 +131,6 @@ class IreneVoiceAssistantConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class IreneOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow."""
 
-    # ✅ ВАЖНО: УБРАЛИ __init__! В современных версиях HA (2023.5+)
-    # self.config_entry уже доступен из базового класса OptionsFlow.
-    # Если оставить __init__(self, config_entry), HA вызовет IreneOptionsFlow()
-    # без аргументов → TypeError → ошибка 500.
-
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
@@ -143,7 +140,7 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         # ✅ Получаем список media_player из HA
-        media_players = [""]  # Пустая строка = не выбрано
+        media_players = [""]
         for state in self.hass.states.async_all():
             if state.domain == "media_player":
                 friendly_name = state.attributes.get("friendly_name", state.entity_id)
@@ -152,6 +149,7 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
         # Текущие значения
         current_media_player = self.config_entry.options.get(CONF_MEDIA_PLAYER, "")
         current_tts_mode = self.config_entry.options.get(CONF_TTS_MODE, TTS_MODE_BOTH)
+        current_notif = self.config_entry.options.get(CONF_ENABLE_NOTIFICATIONS, True)  # ✅ НОВОЕ
 
         return self.async_show_form(
             step_id="init",
@@ -180,6 +178,11 @@ class IreneOptionsFlow(config_entries.OptionsFlow):
                         CONF_MEDIA_PLAYER,
                         default=current_media_player,
                     ): vol.In(media_players),
+                    # ✅ НОВОЕ: чекбокс уведомлений
+                    vol.Optional(
+                        CONF_ENABLE_NOTIFICATIONS,
+                        default=current_notif,
+                    ): bool,
                 }
             ),
         )
