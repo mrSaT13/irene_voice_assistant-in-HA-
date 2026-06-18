@@ -106,7 +106,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         enable_notifications: bool = True,
     ) -> None:
         super().__init__(
-            self_ref := hass,
+            hass,
             _LOGGER,
             name=f"Irene Voice Assistant ({name})",
             update_interval=timedelta(seconds=60),
@@ -130,6 +130,11 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stt_serverside_path: Optional[str] = None
         self._stt_session_ready = asyncio.Event()
         self._stt_result_future: Optional[asyncio.Future] = None
+
+        # ✅ НОВОЕ: событие завершения negotiate (резолвится листенером).
+        # Это позволяет листенеру быть единственным потребителем receive().
+        self._negotiate_event = asyncio.Event()
+        self._negotiate_protocols_result: list[str] = []
 
         self.ws_base_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
 
@@ -193,6 +198,12 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.ws_connected and self.ws_connection and not self.ws_connection.closed:
                 return
 
+            # ✅ Сбрасываем состояние negotiate при (пере)подключении
+            self._negotiate_event.clear()
+            self._negotiate_protocols_result = []
+            self._stt_session_ready.clear()
+            self._stt_serverside_path = None
+
             try:
                 ws_url = f"{self.ws_base_url}{API_WEBSOCKET}"
                 _LOGGER.info(f"Connecting to WebSocket: {ws_url}")
@@ -205,13 +216,15 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     autoping=True,
                 )
 
-                # ✅ ИСПРАВЛЕНО: запускаем листенер ДО negotiate.
-                # Ирина может сразу после согласования прислать in.stt.serverside/ready,
-                # и если листенер ещё не крутится — мы теряем это сообщение.
+                # ✅ Запускаем листенер ДО отправки negotiate/request.
+                # Листенер — единственный, кто вызывает receive().
+                # _negotiate_protocols() ждёт события, которое выставит листенер
+                # при получении negotiate/agree. Так не будет гонки.
                 if self._ws_listener_task is None or self._ws_listener_task.done():
-                    self._ws_listener_task = self.hass.async_create_task(self._ws_listener())
-                    # Даём задаче буквально один тик, чтобы она успела стартовать
-                    # и подцепиться к сокету через receive().
+                    self._ws_listener_task = self.hass.async_create_task(
+                        self._ws_listener()
+                    )
+                    # Один тик — чтобы листенер успел выйти на первый receive().
                     await asyncio.sleep(0.05)
 
                 await self._negotiate_protocols()
@@ -226,6 +239,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise
 
     async def _negotiate_protocols(self) -> None:
+        """Отправить negotiate/request и дождаться negotiate/agree через событие."""
         negotiate_msg = {
             "type": MSG_NEGOTIATE_REQUEST,
             "protocols": [
@@ -238,20 +252,21 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ],
         }
         await self.ws_connection.send_json(negotiate_msg)
+        _LOGGER.debug("Sent negotiate/request, waiting for agree via listener event...")
 
         try:
-            msg = await asyncio.wait_for(self.ws_connection.receive_json(), timeout=10.0)
-            if msg.get("type") == MSG_NEGOTIATE_AGREE:
-                self.agreed_protocols = msg.get("protocols", [])
-                _LOGGER.info(f"Protocols agreed: {self.agreed_protocols}")
-            else:
-                self.agreed_protocols = []
-                _LOGGER.warning(f"Unexpected negotiate response: {msg}")
+            await asyncio.wait_for(self._negotiate_event.wait(), timeout=10.0)
+            self.agreed_protocols = self._negotiate_protocols_result
+            _LOGGER.info(f"Protocols agreed: {self.agreed_protocols}")
         except asyncio.TimeoutError:
             self.agreed_protocols = []
-            _LOGGER.warning("Negotiate timeout, no protocols agreed")
+            _LOGGER.warning(
+                "Negotiate timeout — листенер не получил negotiate/agree за 10 сек. "
+                "Проверьте, что сервер Ирины отвечает на negotiate/request."
+            )
 
     async def _ws_listener(self) -> None:
+        """Единственный читатель WS. Диспатчит сообщения по типам."""
         try:
             while self.ws_connected and self.ws_connection and not self.ws_connection.closed:
                 try:
@@ -260,9 +275,23 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         try:
                             data = json.loads(msg.data)
-                            await self._handle_ws_message(data)
                         except json.JSONDecodeError as err:
                             _LOGGER.warning(f"Invalid JSON: {err}")
+                            continue
+
+                        # ✅ Перехватываем negotiate/agree ДО общего диспатча,
+                        # чтобы выставить _negotiate_event для ожидающего
+                        # _negotiate_protocols().
+                        if data.get("type") == MSG_NEGOTIATE_AGREE:
+                            self._negotiate_protocols_result = data.get("protocols", [])
+                            self._negotiate_event.set()
+                            # НЕ continue — пусть сообщение ещё пройдёт обработку,
+                            # если в будущем понадобится. Сейчас она ничего не делает
+                            # для этого типа, но это безопасно.
+                            continue
+
+                        await self._handle_ws_message(data)
+
                     elif msg.type == aiohttp.WSMsgType.PING:
                         await self.ws_connection.pong(msg.data)
                     elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
@@ -282,6 +311,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         finally:
             was_connected = self.ws_connected
             self.ws_connected = False
+            self._negotiate_event.clear()  # на случай переподключения
             if was_connected:
                 _LOGGER.info("WS disconnected, scheduling reconnect")
                 self.hass.async_create_task(self._reconnect())
@@ -803,6 +833,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def disconnect_websocket(self) -> None:
         self.ws_connected = False
+        self._negotiate_event.clear()
         if self._response_buffer.timer:
             self._response_buffer.timer.cancel()
         if self._ws_listener_task and not self._ws_listener_task.done():
