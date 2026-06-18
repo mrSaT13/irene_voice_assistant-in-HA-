@@ -95,15 +95,10 @@ class IreneSTTEntity(SpeechToTextEntity):
                 )
                 return SpeechResult(None, SpeechResultState.ERROR)
 
-            # ✅ ИСПРАВЛЕНО: увеличенный таймаут ожидания ready.
-            # На холодном старте HA может инициировать STT через несколько секунд
-            # после старта — 5 секунд слишком мало, особенно если Ирина стартует.
+            # ✅ Ждём in.stt.serverside/ready через событие.
+            # Увеличенный таймаут на холодный старт.
             if not self.coordinator._stt_serverside_path:
-                _LOGGER.info(
-                    "Waiting for STT server-side ready event from Irene "
-                    f"(currently path={self.coordinator._stt_serverside_path}, "
-                    f"event_set={self.coordinator._stt_session_ready.is_set()})..."
-                )
+                _LOGGER.info("Waiting for STT server-side ready event from Irene...")
                 try:
                     await asyncio.wait_for(
                         self.coordinator._stt_session_ready.wait(),
@@ -112,9 +107,8 @@ class IreneSTTEntity(SpeechToTextEntity):
                 except asyncio.TimeoutError:
                     _LOGGER.error(
                         f"STT server-side not ready after 30s timeout. "
-                        f"path={self.coordinator._stt_serverside_path}, "
-                        f"event_set={self.coordinator._stt_session_ready.is_set()}, "
-                        f"agreed_protocols={self.coordinator.agreed_protocols}"
+                        f"agreed_protocols={self.coordinator.agreed_protocols}, "
+                        f"event_set={self.coordinator._stt_session_ready.is_set()}"
                     )
                     return SpeechResult(None, SpeechResultState.ERROR)
 
@@ -122,8 +116,6 @@ class IreneSTTEntity(SpeechToTextEntity):
                 _LOGGER.error("STT path not received from Irene")
                 return SpeechResult(None, SpeechResultState.ERROR)
 
-            # ✅ Без sample_rate сервер по умолчанию ждёт 44100 Гц, и WAV 16 кГц
-            # интерпретируется как «каша» — поэтому всегда передаём явно.
             stt_ws_url = (
                 f"{self.coordinator.ws_base_url}"
                 f"{self.coordinator._stt_serverside_path}?sample_rate=16000"
@@ -133,7 +125,8 @@ class IreneSTTEntity(SpeechToTextEntity):
             session = async_get_clientsession(self.hass, verify_ssl=False)
             ssl_ctx = self.coordinator._ssl_context if self.coordinator._ssl_context else False
 
-            # Готовим future ДО открытия WS — иначе можем пропустить ответ
+            # Future должен быть готов ДО открытия стрим-WS,
+            # чтобы листенер основного WS мог зарезолвить его при recognized.
             await self.coordinator.prepare_stt_result()
 
             chunk_count = 0
@@ -144,12 +137,8 @@ class IreneSTTEntity(SpeechToTextEntity):
                     _LOGGER.info("STT WS connected, streaming audio")
 
                     async for chunk in stream:
-                        # Если Ирина сама сейчас говорит (TTS) — она прислала in.mute/mute.
-                        # Не шлём микрофон, чтобы не было эха/фантомного распознавания.
                         if self.coordinator.is_muted:
-                            _LOGGER.debug("Skipping chunk — microphone muted (TTS playing)")
                             continue
-
                         if chunk:
                             await stt_ws.send_bytes(chunk)
                             chunk_count += 1
@@ -159,16 +148,12 @@ class IreneSTTEntity(SpeechToTextEntity):
                         "closing stream to signal end-of-speech"
                     )
 
-                    # ✅ ИСПРАВЛЕНО: корректное закрытие WS — это сигнал EOS для Ирины.
-                    # Раньше отправлялся send_bytes(b"") что недокументировано
-                    # и могло игнорироваться, из-за чего Ирина ждала ещё данных
-                    # и не присылала `recognized` — был timeout.
+                    # ✅ Корректный сигнал EOS — закрытие WS.
                     try:
                         await stt_ws.close(code=1000, message=b"eof")
                     except Exception as close_err:
                         _LOGGER.debug(f"STT WS close exception (usually fine): {close_err}")
 
-                # WS закрыт — ждём результат распознавания (приходит через основной WS)
                 text = await self.coordinator.wait_stt_result(timeout=20.0)
 
                 if text is not None and len(text.strip()) > 0:
@@ -176,8 +161,7 @@ class IreneSTTEntity(SpeechToTextEntity):
                     return SpeechResult(text, SpeechResultState.SUCCESS)
                 else:
                     _LOGGER.warning(
-                        f"STT no text recognized (sent {chunk_count} chunks, "
-                        f"mute_during={self.coordinator.is_muted})"
+                        f"STT no text recognized (sent {chunk_count} chunks)"
                     )
                     return SpeechResult(None, SpeechResultState.ERROR)
 
