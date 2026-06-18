@@ -102,7 +102,9 @@ class IreneSTTEntity(SpeechToTextEntity):
                 _LOGGER.error("STT path not received")
                 return SpeechResult(None, SpeechResultState.ERROR)
 
-            stt_ws_url = f"{self.coordinator.ws_base_url}{self.coordinator._stt_serverside_path}"
+            # ✅ ИСПРАВЛЕНО: добавляем ?sample_rate=16000
+            # Без этого параметра сервер думает, что мы шлём 44100 Гц, и выдаёт "кашу"
+            stt_ws_url = f"{self.coordinator.ws_base_url}{self.coordinator._stt_serverside_path}?sample_rate=16000"
             _LOGGER.info(f"Connecting to STT WS: {stt_ws_url}")
 
             session = async_get_clientsession(self.hass, verify_ssl=False)
@@ -116,6 +118,11 @@ class IreneSTTEntity(SpeechToTextEntity):
 
                 chunk_count = 0
                 async for chunk in stream:
+                    # ✅ ИСПРАВЛЕНО: если Ирина сама говорит (играет TTS), она шлёт in.mute/mute.
+                    # Мы не должны отправлять звук с микрофона, чтобы не было эха!
+                    if self.coordinator.is_muted:
+                        continue
+
                     if chunk:
                         await stt_ws.send_bytes(chunk)
                         chunk_count += 1
