@@ -26,6 +26,7 @@ from .const import (
     MSG_IN_TEXT_DIRECT_TEXT,
     MSG_OUT_TEXT_PLAIN_TEXT,
     MSG_OUT_AUDIO_LINK_PLAYBACK_REQUEST,
+    MSG_OUT_AUDIO_LINK_PLAYBACK_PROGRESS,  # ✅ НОВОЕ
     MSG_OUT_AUDIO_LINK_PLAYBACK_DONE,
     MSG_IN_STT_SERVERSIDE_READY,
     MSG_IN_STT_SERVERSIDE_RECOGNIZED,
@@ -86,6 +87,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         buffer_timeout: float = MESSAGE_BUFFER_TIMEOUT,
         media_player_entity: str | None = None,
         tts_mode: str = TTS_MODE_BOTH,
+        enable_notifications: bool = True,  # ✅ НОВОЕ
     ) -> None:
         super().__init__(
             hass,
@@ -103,6 +105,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self.media_player_entity = media_player_entity
         self.tts_mode = tts_mode
+        self.enable_notifications = enable_notifications  # ✅ НОВОЕ
         self._pending_audio_responses: dict[str, asyncio.Future] = {}
 
         self._tts_request = False
@@ -138,9 +141,14 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self.ha_bridge = HaBridge(hass)
 
+        # ✅ НОВОЕ: флаг заглушения микрофона и активные воспроизведения
+        self.is_muted: bool = False
+        self._active_playbacks: dict[str, asyncio.Task] = {}
+
         _LOGGER.info(
             f"IreneCoordinator initialized: mode={tts_mode}, "
-            f"media_player={media_player_entity}, url={base_url}"
+            f"media_player={media_player_entity}, url={base_url}, "
+            f"notifications={enable_notifications}"
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -158,10 +166,11 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "buffer_timeout": self.buffer_timeout,
                         "tts_mode": self.tts_mode,
                         "media_player": self.media_player_entity,
+                        "is_muted": self.is_muted,  # ✅ НОВОЕ
                     }
         except (asyncio.TimeoutError, aiohttp.ClientError) as err:
             _LOGGER.warning(f"Update error: {err}")
-        raise UpdateFailed("Failed to communicate with Irene")
+            raise UpdateFailed("Failed to communicate with Irene")
 
     async def ensure_websocket_connected(self) -> None:
         async with self.ws_lock:
@@ -204,7 +213,7 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 [PROTOCOL_OUT_TTS_SERVERSIDE],
                 [PROTOCOL_IN_STT_SERVERSIDE],
                 [PROTOCOL_IN_MUTE],
-            ]
+            ],
         }
         await self.ws_connection.send_json(negotiate_msg)
 
@@ -246,9 +255,8 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     except Exception:
                         break
                     continue
-                except Exception as err:
-                    _LOGGER.error(f"WS listener error: {err}")
-                    break
+        except Exception as err:
+            _LOGGER.error(f"WS listener error: {err}")
         finally:
             was_connected = self.ws_connected
             self.ws_connected = False
@@ -348,13 +356,15 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     })
 
             if not self._pending_request:
-                _LOGGER.info("Unsolicited message from Irene, showing as notification")
-                async_create_notification(
-                    self.hass,
-                    message=text,
-                    title=f"💬 {self.name}",
-                    notification_id=f"irene_{int(dt_util.utcnow().timestamp())}",
-                )
+                # ✅ ИСПРАВЛЕНО: проверяем флаг уведомлений
+                if self.enable_notifications:
+                    _LOGGER.info("Unsolicited message from Irene, showing as notification")
+                    async_create_notification(
+                        self.hass,
+                        message=text,
+                        title=f"💬 {self.name}",
+                        notification_id=f"irene_{int(dt_util.utcnow().timestamp())}",
+                    )
                 self.hass.bus.async_fire("irene_notification", {
                     "message": text,
                     "title": self.name,
@@ -367,13 +377,14 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             url = data.get("url", "")
             playback_id = data.get("playbackId", "")
             alt_text = data.get("altText", "")
-            _LOGGER.info(f"Audio request: {url}, altText={alt_text}")
+            _LOGGER.info(f"Audio request: {url}, playbackId={playback_id}, altText={alt_text}")
 
+            # ✅ ИСПРАВЛЕНО: резолвим future для tts.py (если ждёт)
             if self._pending_audio_responses:
                 for future in list(self._pending_audio_responses.values()):
                     if not future.done():
                         future.set_result(url)
-                        _LOGGER.info(f"Resolved audio URL: {url}")
+                        _LOGGER.info(f"Resolved audio URL for tts.py: {url}")
                         break
 
             self._add_to_history("assistant", f"[Аудио] {alt_text or url}")
@@ -381,18 +392,16 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "type": "audio",
                 "url": url,
                 "alt_text": alt_text,
+                "playback_id": playback_id,
             })
 
+            # ✅ ИСПРАВЛЕНО: запускаем фоновый трекер воспроизведения
+            # вместо мгновенной отправки playback-done
             if playback_id:
-                try:
-                    await self.ws_connection.send_json({
-                        "type": MSG_OUT_AUDIO_LINK_PLAYBACK_DONE,
-                        "playbackId": playback_id,
-                    })
-                except Exception:
-                    pass
+                self._start_playback_tracking(playback_id)
 
-            if not self._pending_request:
+            # ✅ ИСПРАВЛЕНО: проверяем флаг уведомлений
+            if not self._pending_request and self.enable_notifications:
                 async_create_notification(
                     self.hass,
                     message=alt_text or f"[Аудио: {url}]",
@@ -417,12 +426,62 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.info(f"STT processed: '{text}'")
 
         elif msg_type == MSG_IN_MUTE_MUTE:
-            _LOGGER.info("Muting microphone")
+            # ✅ ИСПРАВЛЕНО: устанавливаем внутренний флаг
+            _LOGGER.info("Muting microphone (in.mute/mute)")
+            self.is_muted = True
             self.hass.bus.async_fire(f"{DOMAIN}_mute", {"muted": True})
 
         elif msg_type == MSG_IN_MUTE_UNMUTE:
-            _LOGGER.info("Unmuting microphone")
+            # ✅ ИСПРАВЛЕНО: снимаем флаг и отправляем playback-done для всех активных
+            _LOGGER.info("Unmuting microphone (in.mute/unmute)")
+            self.is_muted = False
             self.hass.bus.async_fire(f"{DOMAIN}_mute", {"muted": False})
+            await self._finalize_all_playbacks()
+
+    # ✅ НОВОЕ: запуск фонового трекера воспроизведения
+    def _start_playback_tracking(self, playback_id: str) -> None:
+        """Запускает фоновую задачу отправки playback-progress каждую секунду."""
+        if playback_id in self._active_playbacks:
+            return  # уже отслеживаем
+        task = self.hass.async_create_task(self._playback_progress_loop(playback_id))
+        self._active_playbacks[playback_id] = task
+        _LOGGER.info(f"Started playback tracking for: {playback_id}")
+
+    async def _playback_progress_loop(self, playback_id: str) -> None:
+        """Каждую секунду шлёт playback-progress в Ирину, пока не отменят."""
+        try:
+            while True:
+                await asyncio.sleep(1)
+                if not self.ws_connection or self.ws_connection.closed:
+                    break
+                try:
+                    await self.ws_connection.send_json({
+                        "type": MSG_OUT_AUDIO_LINK_PLAYBACK_PROGRESS,
+                        "playbackId": playback_id,
+                    })
+                except Exception as err:
+                    _LOGGER.warning(f"Failed to send playback-progress: {err}")
+                    break
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._active_playbacks.pop(playback_id, None)
+
+    async def _finalize_all_playbacks(self) -> None:
+        """Отправляет playback-done для всех активных воспроизведений (вызывается по in.mute/unmute)."""
+        for pid, task in list(self._active_playbacks.items()):
+            try:
+                if self.ws_connection and not self.ws_connection.closed:
+                    await self.ws_connection.send_json({
+                        "type": MSG_OUT_AUDIO_LINK_PLAYBACK_DONE,
+                        "playbackId": pid,
+                    })
+                    _LOGGER.info(f"Sent playback-done for: {pid}")
+            except Exception as err:
+                _LOGGER.warning(f"Failed to send playback-done: {err}")
+            finally:
+                task.cancel()
+        self._active_playbacks.clear()
 
     async def send_playback_done(self, playback_id: str) -> None:
         """Публичный метод: вызывайте когда файл реально скачан/воспроизведён."""
@@ -681,6 +740,11 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not future.done():
                 future.cancel()
         self._pending_audio_responses.clear()
+
+        # ✅ НОВОЕ: отменяем все активные воспроизведения
+        for task in self._active_playbacks.values():
+            task.cancel()
+        self._active_playbacks.clear()
 
     def _add_to_history(self, role: str, content: str) -> None:
         self.chat_history.append({
