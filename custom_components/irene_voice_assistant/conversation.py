@@ -77,11 +77,6 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
             
             _LOGGER.info(f"Irene response: {response_text}")
             
-            if response_text and response_text.strip():
-                self.hass.async_create_task(
-                    self._speak_response(response_text)
-                )
-            
             intent_response = intent.IntentResponse(language=user_input.language)
             intent_response.async_set_speech(response_text)
             
@@ -98,10 +93,3 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
                 response=intent_response,
                 conversation_id=user_input.conversation_id,
             )
-    
-    async def _speak_response(self, text: str) -> None:
-        """Озвучить ответ Ирины через TTS с учётом настроек."""
-        try:
-            await self.coordinator.tts_say_with_mode(text)
-        except Exception as err:
-            _LOGGER.warning(f"TTS speak failed: {err}")
