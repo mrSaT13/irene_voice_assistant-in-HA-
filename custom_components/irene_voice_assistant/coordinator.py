@@ -375,6 +375,18 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _handle_ws_message(self, data: dict[str, Any]) -> None:
         msg_type = data.get("type", "")
 
+        if self._tts_request and msg_type not in (
+            MSG_OUT_AUDIO_LINK_PLAYBACK_REQUEST,
+            MSG_IN_STT_SERVERSIDE_READY,
+            MSG_IN_MUTE_MUTE,
+            MSG_IN_MUTE_UNMUTE,
+            MSG_NEGOTIATE_AGREE,
+        ):
+            _LOGGER.info(
+                f"[TTS-mode] Received while waiting for audio: type={msg_type}, "
+                f"data={json.dumps(data, ensure_ascii=False)[:300]}"
+            )
+
         if msg_type == MSG_OUT_TEXT_PLAIN_TEXT:
             text = data.get("text", "")
             _LOGGER.info(f"Received text: {text}")
