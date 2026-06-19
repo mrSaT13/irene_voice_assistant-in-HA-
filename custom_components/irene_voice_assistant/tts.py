@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -14,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, API_TTS_WAV
+from .const import DOMAIN
 from .coordinator import IreneCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,9 +39,7 @@ async def async_setup_entry(
 class IreneTTSEntity(TextToSpeechEntity):
     """Irene TTS entity.
 
-    Два подхода:
-    1. HTTP GET /ttsWav?text=... — прямой запрос WAV от сервера Ирины.
-    2. WebSocket: отправка текста → ожидание out.audio.link/playback-request.
+    Использует WebSocket playback-request для получения WAV от сервера Ирины.
     """
 
     _attr_name = None
@@ -59,14 +58,17 @@ class IreneTTSEntity(TextToSpeechEntity):
 
     @property
     def default_language(self) -> str:
+        """Return the default language."""
         return "ru"
 
     @property
     def supported_languages(self) -> list[str]:
+        """Return the list of supported languages."""
         return ["ru", "en"]
 
     @property
     def supported_options(self) -> list[str]:
+        """Return list of supported options."""
         return []
 
     async def async_get_tts_audio(
@@ -75,65 +77,27 @@ class IreneTTSEntity(TextToSpeechEntity):
         language: str,
         options: dict[str, Any]
     ) -> tuple[str | None, bytes | None]:
-        """Load TTS audio from Irene server.
-
-        Стратегия:
-        1. Пробуем HTTP /ttsWav — сервер отдаёт WAV напрямую.
-        2. Если не вышло — пробуем WebSocket (playback-request).
-        3. Если ничего — возвращаем None.
-        """
+        """Load TTS from Irene via WebSocket playback-request."""
         try:
             _LOGGER.info(f"TTS request: '{message}' (lang: {language})")
 
-            audio_bytes = await self._try_http_tts(message)
-            if audio_bytes:
-                return "wav", audio_bytes
+            self.coordinator._current_playback = None
 
-            _LOGGER.info("HTTP /ttsWav failed, trying WebSocket approach")
-            audio_bytes = await self._try_ws_tts(message)
-            if audio_bytes:
-                return "wav", audio_bytes
-
-            _LOGGER.warning("All TTS methods failed")
-            return None, None
-
-        except Exception as err:
-            _LOGGER.error(f"TTS error: {err}", exc_info=True)
-            return None, None
-
-    async def _try_http_tts(self, message: str) -> bytes | None:
-        """Пробуем получить WAV через HTTP /ttsWav."""
-        try:
-            session = async_get_clientsession(self.hass, verify_ssl=False)
-            from urllib.parse import quote
-            encoded = quote(message, safe="")
-            url = f"{self.coordinator.base_url}{API_TTS_WAV}?text={encoded}"
-            _LOGGER.info(f"HTTP TTS: {url}")
-
-            async with session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
-                if response.status == 200:
-                    data = await response.read()
-                    if len(data) > 100:
-                        _LOGGER.info(f"HTTP TTS OK: {len(data)} bytes")
-                        return data
-                    _LOGGER.warning(f"HTTP TTS response too small: {len(data)} bytes")
-                else:
-                    _LOGGER.warning(f"HTTP TTS error: {response.status}")
-        except Exception as err:
-            _LOGGER.warning(f"HTTP TTS failed: {err}")
-        return None
-
-    async def _try_ws_tts(self, message: str) -> bytes | None:
-        """Пробуем получить WAV через WebSocket (playback-request)."""
-        try:
             audio_url = await self.coordinator._get_tts_audio_url(
                 message, timeout=20.0
             )
+
             if not audio_url:
-                return None
+                _LOGGER.warning("Failed to get TTS audio URL from Irene")
+                return None, None
+
+            playback_id = None
+            for _ in range(20):
+                pending = self.coordinator.get_pending_playback()
+                if pending and pending.get("playback_id"):
+                    playback_id = pending["playback_id"]
+                    break
+                await asyncio.sleep(0.05)
 
             full_url = f"{self.coordinator.base_url}{audio_url}"
             _LOGGER.info(f"Downloading TTS audio: {full_url}")
@@ -144,17 +108,29 @@ class IreneTTSEntity(TextToSpeechEntity):
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
                 if response.status == 200:
-                    data = await response.read()
-                    _LOGGER.info(f"WS TTS OK: {len(data)} bytes")
+                    audio_bytes = await response.read()
+                    _LOGGER.info(f"TTS audio downloaded: {len(audio_bytes)} bytes")
 
-                    pending = self.coordinator.get_pending_playback()
-                    playback_id = pending.get("playback_id") if pending else None
                     if playback_id:
                         await self.coordinator.send_playback_done(playback_id)
+                    else:
+                        _LOGGER.warning(
+                            "No playback_id found, skipping done notification"
+                        )
 
-                    return data
+                    return "wav", audio_bytes
                 else:
-                    _LOGGER.error(f"WS TTS download error: HTTP {response.status}")
+                    _LOGGER.error(f"TTS download error: HTTP {response.status}")
+                    if playback_id:
+                        await self.coordinator.send_playback_done(playback_id)
+                    return None, None
+
         except Exception as err:
-            _LOGGER.warning(f"WS TTS failed: {err}")
-        return None
+            _LOGGER.error(f"TTS error: {err}", exc_info=True)
+            pending = self.coordinator.get_pending_playback()
+            if pending and pending.get("playback_id"):
+                try:
+                    await self.coordinator.send_playback_done(pending["playback_id"])
+                except Exception:
+                    pass
+            return None, None
