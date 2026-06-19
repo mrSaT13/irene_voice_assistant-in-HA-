@@ -57,25 +57,27 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
     
     @property
     def supported_languages(self) -> list[str]:
-        """Return supported languages."""
         return [MATCH_ALL, "ru", "en"]
     
     @property
     def attribution(self) -> str:
-        """Return attribution."""
         return "Powered by Irene Voice Assistant"
     
     async def async_process(
         self,
         user_input: conversation.ConversationInput,
     ) -> conversation.ConversationResult:
-        """Process user input with WebSocket."""
         try:
             _LOGGER.info(f"Irene processing: {user_input.text}")
             
             response_text = await self.coordinator.send_text_command(user_input.text)
             
             _LOGGER.info(f"Irene response: {response_text}")
+            
+            if response_text and response_text.strip():
+                self.hass.async_create_task(
+                    self._speak_response(response_text)
+                )
             
             intent_response = intent.IntentResponse(language=user_input.language)
             intent_response.async_set_speech(response_text)
@@ -93,3 +95,11 @@ class IreneConversationAgent(conversation.AbstractConversationAgent):
                 response=intent_response,
                 conversation_id=user_input.conversation_id,
             )
+    
+    async def _speak_response(self, text: str) -> None:
+        """Озвучить ответ через notification API (играет на сервере Ирины)."""
+        try:
+            await self.coordinator.tts_say(text)
+            _LOGGER.info(f"TTS spoken on server: {text[:80]}...")
+        except Exception as err:
+            _LOGGER.warning(f"TTS speak failed: {err}")
