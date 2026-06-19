@@ -208,12 +208,25 @@ class IreneCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ws_url = f"{self.ws_base_url}{API_WEBSOCKET}"
                 _LOGGER.info(f"Connecting to WebSocket: {ws_url}")
 
+                browser_headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/126.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "*/*",
+                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Origin": self.base_url,
+                    "Sec-WebSocket-Protocol": "face_web",
+                }
+
                 self.ws_connection = await self.session.ws_connect(
                     ws_url,
                     timeout=15.0,
                     ssl=self._ssl_context if self._ssl_context else False,
                     heartbeat=30.0,
                     autoping=True,
+                    headers=browser_headers,
                 )
 
                 # ✅ Запускаем листенер ДО отправки negotiate/request.
